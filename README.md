@@ -1,5 +1,5 @@
 
-# nanoGPT
+# nanoGPT with SLS
 
 ![nanoGPT](assets/nanogpt.jpg)
 
