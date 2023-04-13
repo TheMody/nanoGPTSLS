@@ -289,7 +289,7 @@ while True:
         break
 
     # forward backward update, with optional gradient accumulation to simulate larger batch size
-    def closure():
+    def closure(backward = False):
         accloss = 0.0
         torch.manual_seed(-1 + (iter_num+1) * (ddp_local_rank*100+1) * (ddp_rank*10+1))
         ix = torch.randint(len(train_data) - block_size, (batch_size,))
@@ -297,21 +297,16 @@ while True:
         X, Y = get_batch('train', ix)
         for micro_step in range(gradient_accumulation_steps):
             if ddp:
-                # in DDP training we only need to sync gradients at the last micro step.
-                # the official way to do this is with model.no_sync() context manager, but
-                # I really dislike that this bloats the code and forces us to repeat code
-                # looking at the source of that context manager, it just toggles this variable
                 model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
             with ctx:
                 logits, loss = model(X, Y)
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             torch.manual_seed((micro_step+1) * (iter_num+1) * (ddp_local_rank*100+1) * (ddp_rank*10+1))
-         #   print((micro_step+1) * (iter_num+1) * (ddp_local_rank+1) * (ddp_rank+1))
             ix = torch.randint(len(train_data) - block_size, (batch_size,))
             
             X, Y = get_batch('train', ix)
-            # backward pass, with gradient scaling if training in fp16
-          #  loss.backward()
+            if backward:
+                loss.backward()
             accloss = accloss + loss
         accloss = accloss/gradient_accumulation_steps #not sure if /gradient_accumulation_steps is correct
         if ddp:
@@ -321,31 +316,9 @@ while True:
         if grad_clip != 0.0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         return accloss
+   
     def closure_with_backward():
-        accloss = 0.0
-        torch.manual_seed(-1 + (iter_num+1) * (ddp_local_rank*100+1) * (ddp_rank*10+1))
-        ix = torch.randint(len(train_data) - block_size, (batch_size,))
-        X, Y = get_batch('train', ix)
-        for micro_step in range(gradient_accumulation_steps):
-            if ddp:
-                model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
-            with ctx:
-                logits, loss = model(X, Y)
-            # immediately async prefetch next batch while model is doing the forward pass on the GPU
-            torch.manual_seed((micro_step+1) * (iter_num+1) * (ddp_local_rank*100+1) * (ddp_rank*10+1))
-            ix = torch.randint(len(train_data) - block_size, (batch_size,))
-            X, Y = get_batch('train', ix)
-            # backward pass, with gradient scaling if training in fp16
-            loss.backward()
-            accloss = accloss + loss
-        accloss = accloss/gradient_accumulation_steps #not sure if /gradient_accumulation_steps is correct
-        if ddp:
-            dist.barrier()
-            dist.all_reduce(accloss, dist.ReduceOp.AVG, async_op=False)
-        # clip the gradient
-        if grad_clip != 0.0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-        return accloss
+        return closure(backward=True)
     optimizer.zero_grad(set_to_none=True)
     loss = optimizer.step(closure = closure, closure_with_backward = closure_with_backward)
 
