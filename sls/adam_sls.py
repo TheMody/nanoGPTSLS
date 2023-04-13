@@ -28,9 +28,7 @@ class AdamSLS(StochLineSearchBase):
                  timescale = 0.05,
                  line_search_fn="armijo",
                  combine_threshold = 0,
-                 smooth = True,
-                 bs_scale = True,
-                 batch_size = 32.0):
+                 smooth = True):
         params = list(params)
         super().__init__(params,
                          n_batches_per_epoch=n_batches_per_epoch,
@@ -75,8 +73,6 @@ class AdamSLS(StochLineSearchBase):
         self.at_step = 0
         self.first_step = True
         self.timescale = timescale
-        self.bs_scale = bs_scale
-        self.batch_size = batch_size
         # self.state['step_size'] = init_step_size
 
         self.avg_decrease = torch.zeros(len(params))#(0.0 for i in range(len(params))]
@@ -111,7 +107,7 @@ class AdamSLS(StochLineSearchBase):
         self.init_step_sizes = [self.init_step_sizes[0] for i in range(len(self.params))]
         
 
-    def step(self, closure):
+    def step(self, closure, closure_with_backward = None):
         # deterministic closure
         seed = time.time()
         start = time.time()
@@ -119,8 +115,11 @@ class AdamSLS(StochLineSearchBase):
             with random_seed_torch(int(seed)):
                 return closure()
 
-        loss = closure_deterministic()
-        loss.backward()
+        if closure_with_backward is not None:
+            loss = closure_with_backward()
+        else:
+            loss = closure_deterministic()
+            loss.backward()
         # print("time for backwards:", time.time()-start)
         # start = time.time()
         if self.clip_grad:
