@@ -25,6 +25,7 @@ from contextlib import nullcontext
 import numpy as np
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
 from torch.distributed import init_process_group, destroy_process_group
 
 from model import GPTConfig, GPT
@@ -88,8 +89,12 @@ if ddp:
     torch.cuda.set_device(device)
     master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
     seed_offset = ddp_rank # each process gets a different seed
+    num_devices = int(os.environ['WORLD_SIZE'])
 else:
     # if not ddp, we are running on a single gpu, and one process
+    ddp_rank = 0
+    ddp_local_rank = 0
+    num_devices = 1
     master_process = True
     seed_offset = 0
     gradient_accumulation_steps *= 8 # simulate 8 gpus
@@ -108,9 +113,10 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 data_dir = os.path.join('data', dataset)
 train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
 val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
-def get_batch(split):
+def get_batch(split, ix = None):
     data = train_data if split == 'train' else val_data
-    ix = torch.randint(len(data) - block_size, (batch_size,))
+    if ix == None:
+        ix = torch.randint(len(data) - block_size, (batch_size,))
     x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
     y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
     if device_type == 'cuda':
@@ -119,6 +125,7 @@ def get_batch(split):
     else:
         x, y = x.to(device), y.to(device)
     return x, y
+
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 0
@@ -239,7 +246,8 @@ if wandb_log and master_process:
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
 
 # training loop
-X, Y = get_batch('train') # fetch the very first batch
+#ix = torch.randint(len(train_data) - block_size, (batch_size,))
+#X, Y = get_batch('train', ix) # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
@@ -281,41 +289,72 @@ while True:
         break
 
     # forward backward update, with optional gradient accumulation to simulate larger batch size
-    # and using the GradScaler if data type is float16
-    for micro_step in range(gradient_accumulation_steps):
-        if ddp:
-            # in DDP training we only need to sync gradients at the last micro step.
-            # the official way to do this is with model.no_sync() context manager, but
-            # I really dislike that this bloats the code and forces us to repeat code
-            # looking at the source of that context manager, it just toggles this variable
-            model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
-        with ctx:
-            def closure():
+    def closure():
+        accloss = 0.0
+        torch.manual_seed(-1 + (iter_num+1) * (ddp_local_rank*100+1) * (ddp_rank*10+1))
+        ix = torch.randint(len(train_data) - block_size, (batch_size,))
+       # print(ix)
+        X, Y = get_batch('train', ix)
+        for micro_step in range(gradient_accumulation_steps):
+            if ddp:
+                # in DDP training we only need to sync gradients at the last micro step.
+                # the official way to do this is with model.no_sync() context manager, but
+                # I really dislike that this bloats the code and forces us to repeat code
+                # looking at the source of that context manager, it just toggles this variable
+                model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
+            with ctx:
                 logits, loss = model(X, Y)
-                return loss
-            optimizer.zero_grad(set_to_none=True)
-            loss = optimizer.step(closure = closure)
-         #   logits, loss = model(X, Y)
-        # immediately async prefetch next batch while model is doing the forward pass on the GPU
-        X, Y = get_batch('train')
-        # backward pass, with gradient scaling if training in fp16
-       # scaler.scale(loss).backward()
-    # clip the gradient
-    if grad_clip != 0.0:
-       # scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-    # step the optimizer and scaler if training in fp16
-    #scaler.step(optimizer)
-  #  scaler.update()
-    # flush the gradients as soon as we can, no need for this memory anymore
-   # optimizer.zero_grad(set_to_none=True)
+            # immediately async prefetch next batch while model is doing the forward pass on the GPU
+            torch.manual_seed((micro_step+1) * (iter_num+1) * (ddp_local_rank*100+1) * (ddp_rank*10+1))
+         #   print((micro_step+1) * (iter_num+1) * (ddp_local_rank+1) * (ddp_rank+1))
+            ix = torch.randint(len(train_data) - block_size, (batch_size,))
+            
+            X, Y = get_batch('train', ix)
+            # backward pass, with gradient scaling if training in fp16
+          #  loss.backward()
+            accloss = accloss + loss
+        accloss = accloss/gradient_accumulation_steps #not sure if /gradient_accumulation_steps is correct
+        if ddp:
+            dist.barrier()
+            dist.all_reduce(accloss, dist.ReduceOp.AVG, async_op=False)
+        # clip the gradient
+        if grad_clip != 0.0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        return accloss
+    def closure_with_backward():
+        accloss = 0.0
+        torch.manual_seed(-1 + (iter_num+1) * (ddp_local_rank*100+1) * (ddp_rank*10+1))
+        ix = torch.randint(len(train_data) - block_size, (batch_size,))
+        X, Y = get_batch('train', ix)
+        for micro_step in range(gradient_accumulation_steps):
+            if ddp:
+                model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
+            with ctx:
+                logits, loss = model(X, Y)
+            # immediately async prefetch next batch while model is doing the forward pass on the GPU
+            torch.manual_seed((micro_step+1) * (iter_num+1) * (ddp_local_rank*100+1) * (ddp_rank*10+1))
+            ix = torch.randint(len(train_data) - block_size, (batch_size,))
+            X, Y = get_batch('train', ix)
+            # backward pass, with gradient scaling if training in fp16
+            loss.backward()
+            accloss = accloss + loss
+        accloss = accloss/gradient_accumulation_steps #not sure if /gradient_accumulation_steps is correct
+        if ddp:
+            dist.barrier()
+            dist.all_reduce(accloss, dist.ReduceOp.AVG, async_op=False)
+        # clip the gradient
+        if grad_clip != 0.0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        return accloss
+    optimizer.zero_grad(set_to_none=True)
+    loss = optimizer.step(closure = closure, closure_with_backward = closure_with_backward)
 
     # timing and logging
     t1 = time.time()
     dt = t1 - t0
     t0 = t1
     if iter_num % log_interval == 0 and master_process:
-        lossf = loss.item() # loss as float. note: this is a CPU-GPU sync point
+        lossf = loss.item()#/(gradient_accumulation_steps*num_devices) # loss as float. note: this is a CPU-GPU sync point
         if local_iter_num >= 5: # let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
