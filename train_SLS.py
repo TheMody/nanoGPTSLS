@@ -46,7 +46,7 @@ wandb_project = 'owt'
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
 # data
 dataset = 'openwebtext'
-gradient_accumulation_steps = 5 # used to simulate larger batch sizes
+gradient_accumulation_steps = 1 # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
 # model
@@ -97,7 +97,7 @@ else:
     num_devices = 1
     master_process = True
     seed_offset = 0
-    gradient_accumulation_steps *= 8 # simulate 8 gpus
+    gradient_accumulation_steps *= 1 # simulate 8 gpus
 
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
@@ -190,13 +190,13 @@ if block_size < model.config.block_size:
 model.to(device)
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
-#scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
+scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 # optimizer
 #optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
 
 from sls.adam_sls import AdamSLS
-optimizer = AdamSLS( [[param for name,param in model.named_parameters() if not "pooler" in name]] , c = 0.5, beta_s = 0.99)
+optimizer = AdamSLS( [[param for name,param in model.named_parameters() if not "pooler" in name]] , c = 0.5, beta_s = 0.99, smooth_after=10)
 if init_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])
 
@@ -246,8 +246,6 @@ if wandb_log and master_process:
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
 
 # training loop
-#ix = torch.randint(len(train_data) - block_size, (batch_size,))
-#X, Y = get_batch('train', ix) # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
@@ -306,13 +304,15 @@ while True:
             
             X, Y = get_batch('train', ix)
             if backward:
+              #  scaler.scale(loss).backward()
                 loss.backward()
             accloss = accloss + loss
-        accloss = accloss/gradient_accumulation_steps #not sure if /gradient_accumulation_steps is correct
+      #  accloss = accloss/gradient_accumulation_steps #not sure if /gradient_accumulation_steps is correct
         if ddp:
             dist.barrier()
-            dist.all_reduce(accloss, dist.ReduceOp.AVG, async_op=False)
+            dist.all_reduce(accloss, dist.ReduceOp.SUM, async_op=False)
         # clip the gradient
+     #   scaler.unscale_(optimizer)
         if grad_clip != 0.0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         return accloss
@@ -327,7 +327,7 @@ while True:
     dt = t1 - t0
     t0 = t1
     if iter_num % log_interval == 0 and master_process:
-        lossf = loss.item()#/(gradient_accumulation_steps*num_devices) # loss as float. note: this is a CPU-GPU sync point
+        lossf = loss.item()/(gradient_accumulation_steps*num_devices) # loss as float. note: this is a CPU-GPU sync point
         if local_iter_num >= 5: # let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
