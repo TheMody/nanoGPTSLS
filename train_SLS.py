@@ -46,7 +46,7 @@ wandb_project = 'owt'
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
 # data
 dataset = 'openwebtext'
-gradient_accumulation_steps = 1 # used to simulate larger batch sizes
+gradient_accumulation_steps = 5 # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
 # model
@@ -193,8 +193,8 @@ model.to(device)
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 # optimizer
-#optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
-
+optimizer_init = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+init = True
 from sls.adam_sls import AdamSLS
 optimizer = AdamSLS( [[param for name,param in model.named_parameters() if not "pooler" in name]] , c = 0.5, beta_s = 0.99, smooth_after=10)
 if init_from == 'resume':
@@ -267,7 +267,7 @@ while True:
                 "iter": iter_num,
                 "train/loss": losses['train'],
                 "val/loss": losses['val'],
-                "lr": optimizer.state['step_sizes'][0],
+             #   "lr": optimizer.state['step_sizes'][0],
                 "mfu": running_mfu*100, # convert to percentage
             })
         if losses['val'] < best_val_loss or always_save_checkpoint:
@@ -319,8 +319,19 @@ while True:
    
     def closure_with_backward():
         return closure(backward=True)
-    optimizer.zero_grad(set_to_none=True)
-    loss = optimizer.step(closure = closure, closure_with_backward = closure_with_backward)
+
+    if iter_num >= warmup_iters:
+        optimizer.zero_grad(set_to_none=True)
+        loss = optimizer.step(closure = closure, closure_with_backward = closure_with_backward)
+    else:
+        lr = get_lr(iter_num) if decay_lr else learning_rate
+        for param_group in optimizer_init.param_groups:
+            param_group['lr'] = lr
+        loss = closure_with_backward()
+        optimizer_init.step()
+        #scaler.update()
+        # flush the gradients as soon as we can, no need for this memory anymore
+        optimizer_init.zero_grad(set_to_none=True)
 
     # timing and logging
     t1 = time.time()
@@ -332,13 +343,16 @@ while True:
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+        lr = get_lr(iter_num) if iter_num < warmup_iters else optimizer.state['step_sizes'][0]
+        avg_grad_norm = 0 if iter_num < warmup_iters else optimizer.state["grad_norm_avg"][0]
+        loss_decrease = 0 if iter_num < warmup_iters else optimizer.state["loss_dec_avg"][0]
         if wandb_log:
             wandb.log({
                 "iter": iter_num,
                 "train/loss": lossf,
-                "lr": optimizer.state['step_sizes'][0],
-                "avg_grad_norm": optimizer.state["grad_norm_avg"][0],
-                "loss_decrease":optimizer.state["loss_dec_avg"][0]
+                "lr": lr,
+                "avg_grad_norm": avg_grad_norm,
+                "loss_decrease":loss_decrease
             })
     iter_num += 1
     local_iter_num += 1
