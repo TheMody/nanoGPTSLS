@@ -25,6 +25,7 @@ from contextlib import nullcontext
 import numpy as np
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
 from torch.distributed import init_process_group, destroy_process_group
 
 from model import GPTConfig, GPT
@@ -45,7 +46,7 @@ wandb_project = 'owt'
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
 # data
 dataset = 'openwebtext'
-gradient_accumulation_steps = 5 # used to simulate larger batch sizes
+gradient_accumulation_steps = 1  # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
 # model
@@ -84,15 +85,22 @@ if ddp:
     init_process_group(backend=backend)
     ddp_rank = int(os.environ['RANK'])
     ddp_local_rank = int(os.environ['LOCAL_RANK'])
+    ddp_world_size = int(os.environ['WORLD_SIZE'])
     device = f'cuda:{ddp_local_rank}'
     torch.cuda.set_device(device)
     master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
     seed_offset = ddp_rank # each process gets a different seed
+    assert gradient_accumulation_steps % torch.cuda.device_count() == 0
+    gradient_accumulation_steps //= torch.cuda.device_count()
 else:
     # if not ddp, we are running on a single gpu, and one process
     master_process = True
+    ddp_local_rank = 0
+    ddp_rank = 0
     seed_offset = 0
-    gradient_accumulation_steps *= 8 # simulate 8 gpus
+    ddp_world_size = 1
+tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
+print(f"tokens per iteration will be: {tokens_per_iter:,}")
 
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
@@ -108,9 +116,10 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 data_dir = os.path.join('data', dataset)
 train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
 val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
-def get_batch(split):
+def get_batch(split, ix = None):
     data = train_data if split == 'train' else val_data
-    ix = torch.randint(len(data) - block_size, (batch_size,))
+    if ix is None:
+      ix = torch.randint(len(data) - block_size, (batch_size,))
     x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
     y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
     if device_type == 'cuda':
@@ -186,9 +195,13 @@ model.to(device)
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 # optimizer
-optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+optimizer_init = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+from sls.adam_sls import AdamSLS
+optimizer = AdamSLS( [[param for name,param in model.named_parameters() if not "pooler" in name]] , c = 0.3, beta_s = 0.99, smooth_after=0)
+
 if init_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])
+checkpoint = None # free up memory
 
 # compile the model
 if compile:
@@ -244,9 +257,9 @@ running_mfu = -1.0
 while True:
 
     # determine and set the learning rate for this iteration
-    lr = get_lr(iter_num) if decay_lr else learning_rate
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
+    # lr = get_lr(iter_num) if decay_lr else learning_rate
+    # for param_group in optimizer.param_groups:
+    #     param_group['lr'] = lr
 
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
@@ -257,7 +270,7 @@ while True:
                 "iter": iter_num,
                 "train/loss": losses['train'],
                 "val/loss": losses['val'],
-                "lr": lr,
+               # "lr": lr,
                 "mfu": running_mfu*100, # convert to percentage
             })
         if losses['val'] < best_val_loss or always_save_checkpoint:
@@ -278,46 +291,98 @@ while True:
 
     # forward backward update, with optional gradient accumulation to simulate larger batch size
     # and using the GradScaler if data type is float16
-    for micro_step in range(gradient_accumulation_steps):
+    # for micro_step in range(gradient_accumulation_steps):
+    #     if ddp:
+    #         # in DDP training we only need to sync gradients at the last micro step.
+    #         # the official way to do this is with model.no_sync() context manager, but
+    #         # I really dislike that this bloats the code and forces us to repeat code
+    #         # looking at the source of that context manager, it just toggles this variable
+    #         model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
+    #     with ctx:
+    #         logits, loss = model(X, Y)
+    #         loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
+    #     # immediately async prefetch next batch while model is doing the forward pass on the GPU
+    #     X, Y = get_batch('train')
+    #     # backward pass, with gradient scaling if training in fp16
+    #     scaler.scale(loss).backward()
+    # # clip the gradient
+    # if grad_clip != 0.0:
+    #     scaler.unscale_(optimizer)
+    #     torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+    # # step the optimizer and scaler if training in fp16
+    # scaler.step(optimizer)
+    # scaler.update()
+    # # flush the gradients as soon as we can, no need for this memory anymore
+    # optimizer.zero_grad(set_to_none=True)
+
+    def closure(backward = False):
+        accloss = 0.0
+        torch.manual_seed(-1 + (iter_num+1) * (ddp_local_rank*100+1) * (ddp_rank*10+1))
+        ix = torch.randint(len(train_data) - block_size, (batch_size,))
+        X, Y = get_batch('train', ix)
+        for micro_step in range(gradient_accumulation_steps):
+            if ddp:
+                model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
+            with ctx:
+                logits, loss = model(X, Y)
+                loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
+            # immediately async prefetch next batch while model is doing the forward pass on the GPU
+            torch.manual_seed((micro_step+1) * (iter_num+1) * (ddp_local_rank*100+1) * (ddp_rank*10+1))
+            ix = torch.randint(len(train_data) - block_size, (batch_size,))
+            X, Y = get_batch('train', ix)
+            if backward:
+              #  scaler.scale(loss).backward()
+                loss.backward()
+            accloss = accloss + loss
+      #  accloss = accloss/gradient_accumulation_steps #not sure if /gradient_accumulation_steps is correct
         if ddp:
-            # in DDP training we only need to sync gradients at the last micro step.
-            # the official way to do this is with model.no_sync() context manager, but
-            # I really dislike that this bloats the code and forces us to repeat code
-            # looking at the source of that context manager, it just toggles this variable
-            model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
-        with ctx:
-            logits, loss = model(X, Y)
-        # immediately async prefetch next batch while model is doing the forward pass on the GPU
-        X, Y = get_batch('train')
-        # backward pass, with gradient scaling if training in fp16
-        #scaler.scale(loss).backward()
-        loss.backward()
-    # clip the gradient
-    if grad_clip != 0.0:
+            dist.barrier()
+            dist.all_reduce(accloss, dist.ReduceOp.AVG, async_op=False)
+        # clip the gradient
      #   scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-    # step the optimizer and scaler if training in fp16
-  #  scaler.step(optimizer)+
-    optimizer.step()
-   # scaler.update()
-    # flush the gradients as soon as we can, no need for this memory anymore
-    optimizer.zero_grad(set_to_none=True)
+        if grad_clip != 0.0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        return accloss
+   
+    def closure_with_backward():
+        return closure(backward=True)
+
+    if iter_num >= warmup_iters:
+        optimizer.zero_grad(set_to_none=True)
+        loss = optimizer.step(closure = closure, closure_with_backward = closure_with_backward)
+    else:
+        lr = get_lr(iter_num) if decay_lr else learning_rate
+        for param_group in optimizer_init.param_groups:
+            param_group['lr'] = lr
+        loss = closure_with_backward()
+        optimizer_init.step()
+        #scaler.update()
+        # flush the gradients as soon as we can, no need for this memory anymore
+        optimizer_init.zero_grad(set_to_none=True)
 
     # timing and logging
     t1 = time.time()
     dt = t1 - t0
     t0 = t1
     if iter_num % log_interval == 0 and master_process:
-        lossf = loss.item() # loss as float. note: this is a CPU-GPU sync point
+        # get loss as float. note: this is a CPU-GPU sync point
+        # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
+        lossf = loss.item() #* gradient_accumulation_steps
         if local_iter_num >= 5: # let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
+
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+        lr = get_lr(iter_num) if iter_num < warmup_iters else optimizer.state['step_sizes'][0]
+        avg_grad_norm = 0 if iter_num < warmup_iters else optimizer.state["grad_norm_avg"][0]
+        loss_decrease = 0 if iter_num < warmup_iters else optimizer.state["loss_dec_avg"][0]
         if wandb_log:
             wandb.log({
                 "iter": iter_num,
                 "train/loss": lossf,
-                "lr": lr
+                "lr": lr,
+                "avg_grad_norm": avg_grad_norm,
+                "loss_decrease":loss_decrease
             })
     iter_num += 1
     local_iter_num += 1

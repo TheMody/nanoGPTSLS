@@ -194,7 +194,6 @@ scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 # optimizer
 optimizer_init = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
-init = True
 from sls.adam_sls import AdamSLS
 optimizer = AdamSLS( [[param for name,param in model.named_parameters() if not "pooler" in name]] , c = 0.5, beta_s = 0.99, smooth_after=10)
 if init_from == 'resume':
@@ -291,7 +290,6 @@ while True:
         accloss = 0.0
         torch.manual_seed(-1 + (iter_num+1) * (ddp_local_rank*100+1) * (ddp_rank*10+1))
         ix = torch.randint(len(train_data) - block_size, (batch_size,))
-       # print(ix)
         X, Y = get_batch('train', ix)
         for micro_step in range(gradient_accumulation_steps):
             if ddp:
@@ -301,7 +299,6 @@ while True:
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             torch.manual_seed((micro_step+1) * (iter_num+1) * (ddp_local_rank*100+1) * (ddp_rank*10+1))
             ix = torch.randint(len(train_data) - block_size, (batch_size,))
-            
             X, Y = get_batch('train', ix)
             if backward:
               #  scaler.scale(loss).backward()
