@@ -183,6 +183,8 @@ class AdamSLS(StochLineSearchBase):
             # print("self.avg_decrease[i]",self.avg_decrease[i])
             if i == self.nextcycle:
                 self.avg_gradient_norm[i] = self.avg_gradient_norm[i] * self.beta_s + (pp_norm[i]) *(1-self.beta_s)
+
+        self.state['gradient_norm'] =  [a.item() for a in pp_norm]
         self.pp_norm = pp_norm
         #    self.avg_gradient_norm_scaled[i] = self.avg_gradient_norm[i]/(1-self.beta)**(self.state['step']+1)
         if self.smooth == False and not self.smooth_after == 0:

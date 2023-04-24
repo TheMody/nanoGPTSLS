@@ -105,6 +105,7 @@ class StochLineSearchBase(torch.optim.Optimizer):
 
                     # compute the loss at the next step; no need to compute gradients.
                     loss_next = closure_deterministic()
+                    self.state['loss_decrease'] = loss-loss_next
                     decrease= (self.avg_decrease[i] * self.beta_s + (loss-loss_next) *(1-self.beta_s) )#/((1-self.beta)**((self.state['step']+1)/len(self.avg_decrease)))
 
                     self.state['n_forwards'] += 1
@@ -131,6 +132,7 @@ class StochLineSearchBase(torch.optim.Optimizer):
                             self.avg_decrease[i]  = self.avg_decrease[i] * self.beta_s + (loss-loss_next) *(1-self.beta_s) 
                             break
                     else: 
+                        print("loss is not decreasing, decreasing step size")
                         step_size = step_size * self.beta_b
               #  self.backtracks  = e
                 # if line search exceeds max_epochs

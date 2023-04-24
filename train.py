@@ -46,7 +46,7 @@ wandb_project = 'owt'
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
 # data
 dataset = 'openwebtext'
-gradient_accumulation_steps = 4  # used to simulate larger batch sizes
+gradient_accumulation_steps = 40  # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
 # model
@@ -64,7 +64,7 @@ beta2 = 0.95
 grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
 # learning rate decay settings
 decay_lr = True # whether to decay the learning rate
-warmup_iters = 2000 # how many steps to warm up for
+warmup_iters = 0 # how many steps to warm up for
 lr_decay_iters = 600000 # should be ~= max_iters per Chinchilla
 min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 # DDP settings
@@ -271,7 +271,7 @@ while True:
                 "train/loss": losses['train'],
                 "val/loss": losses['val'],
                # "lr": lr,
-                "mfu": running_mfu*100, # convert to percentage
+              #  "mfu": running_mfu*100, # convert to percentage
             })
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
@@ -375,14 +375,18 @@ while True:
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
         lr = get_lr(iter_num) if iter_num < warmup_iters else optimizer.state['step_sizes'][0]
         avg_grad_norm = 0 if iter_num < warmup_iters else optimizer.state["grad_norm_avg"][0]
-        loss_decrease = 0 if iter_num < warmup_iters else optimizer.state["loss_dec_avg"][0]
+        loss_decrease_avg = 0 if iter_num < warmup_iters else optimizer.state["loss_dec_avg"][0]
+        gradient_norm = 0 if iter_num < warmup_iters else optimizer.state["gradient_norm"][0]
+        loss_decrease = 0 if iter_num < warmup_iters else optimizer.state["loss_decrease"]
         if wandb_log:
             wandb.log({
                 "iter": iter_num,
                 "train/loss": lossf,
                 "lr": lr,
                 "avg_grad_norm": avg_grad_norm,
-                "loss_decrease":loss_decrease
+                "loss_decrease_avg":loss_decrease_avg,
+                "loss_decrease_current":loss_decrease,
+                "gradient_norm":gradient_norm
             })
     iter_num += 1
     local_iter_num += 1
