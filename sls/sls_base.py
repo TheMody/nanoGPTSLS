@@ -109,7 +109,7 @@ class StochLineSearchBase(torch.optim.Optimizer):
 
                     self.state['n_forwards'] += 1
 
-                    if loss - loss_next > 0.0:
+                    if loss - loss_next > 0.0 or not self.only_decrease:
                         if loss - loss_next == 0.0:
                             found = 1
                             print("had cancelation error loss was equal no decrease necessary")
@@ -130,6 +130,8 @@ class StochLineSearchBase(torch.optim.Optimizer):
                         # if not self.first_step:
                             self.avg_decrease[i]  = self.avg_decrease[i] * self.beta_s + (loss-loss_next) *(1-self.beta_s) 
                             break
+                    else: 
+                        step_size = step_size * self.beta_b
               #  self.backtracks  = e
                 # if line search exceeds max_epochs
                 # if found == 0:
