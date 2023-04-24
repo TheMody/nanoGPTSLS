@@ -109,26 +109,27 @@ class StochLineSearchBase(torch.optim.Optimizer):
 
                     self.state['n_forwards'] += 1
 
-                    if loss - loss_next == 0.0:
-                        found = 1
-                        print("had cancelation error loss was equal no decrease necessary")
+                    if loss - loss_next > 0.0:
+                        if loss - loss_next == 0.0:
+                            found = 1
+                            print("had cancelation error loss was equal no decrease necessary")
 
-                    if not self.smooth:
-                        decrease = loss-loss_next
-                        self.avg_decrease[i] = decrease
-                        suff_dec = self.pp_norm[i]
-                        self.avg_gradient_norm[i] = suff_dec
-                    # print("self.avg_decrease[i]", self.avg_decrease[i])
-                    # print("self.avg_gradient_norm[i]", self.avg_gradient_norm[i])
-                    found, step_size = self.check_armijo_conditions(step_size=step_size,
-                                                                    decrease=decrease,
-                                                                    suff_dec=suff_dec,
-                                                                    c=self.c,
-                                                                    beta_b=self.beta_b)
-                    if found == 1:
-                       # if not self.first_step:
-                        self.avg_decrease[i]  = self.avg_decrease[i] * self.beta_s + (loss-loss_next) *(1-self.beta_s) 
-                        break
+                        if not self.smooth:
+                            decrease = loss-loss_next
+                            self.avg_decrease[i] = decrease
+                            suff_dec = self.pp_norm[i]
+                            self.avg_gradient_norm[i] = suff_dec
+                        # print("self.avg_decrease[i]", self.avg_decrease[i])
+                        # print("self.avg_gradient_norm[i]", self.avg_gradient_norm[i])
+                        found, step_size = self.check_armijo_conditions(step_size=step_size,
+                                                                        decrease=decrease,
+                                                                        suff_dec=suff_dec,
+                                                                        c=self.c,
+                                                                        beta_b=self.beta_b)
+                        if found == 1:
+                        # if not self.first_step:
+                            self.avg_decrease[i]  = self.avg_decrease[i] * self.beta_s + (loss-loss_next) *(1-self.beta_s) 
+                            break
               #  self.backtracks  = e
                 # if line search exceeds max_epochs
                 # if found == 0:

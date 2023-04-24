@@ -36,7 +36,7 @@ from model import GPTConfig, GPT
 out_dir = 'out'
 eval_interval = 2000
 log_interval = 1
-eval_iters = 200
+eval_iters = 40
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
@@ -46,7 +46,7 @@ wandb_project = 'owt'
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
 # data
 dataset = 'openwebtext'
-gradient_accumulation_steps = 1  # used to simulate larger batch sizes
+gradient_accumulation_steps = 4  # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
 # model
@@ -197,7 +197,7 @@ scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 # optimizer
 optimizer_init = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
 from sls.adam_sls import AdamSLS
-optimizer = AdamSLS( [[param for name,param in model.named_parameters() if not "pooler" in name]] , c = 0.3, beta_s = 0.99, smooth_after=0)
+optimizer = AdamSLS( [[param for name,param in model.named_parameters() if not "pooler" in name]] , c = 0.5, beta_s = 0.9, smooth_after=0)
 
 if init_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])
@@ -325,7 +325,7 @@ while True:
                 model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
             with ctx:
                 logits, loss = model(X, Y)
-                loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
+                loss = loss / gradient_accumulation_steps #* ddp_world_size) # scale the loss to account for gradient accumulation
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             torch.manual_seed((micro_step+1) * (iter_num+1) * (ddp_local_rank*100+1) * (ddp_rank*10+1))
             ix = torch.randint(len(train_data) - block_size, (batch_size,))

@@ -29,7 +29,8 @@ class AdamSLS(StochLineSearchBase):
                  line_search_fn="armijo",
                  combine_threshold = 0,
                  smooth = True,
-                 smooth_after = 0):
+                 smooth_after = 0,
+                 only_decrease = False):
         params = list(params)
         super().__init__(params,
                          n_batches_per_epoch=n_batches_per_epoch,
@@ -54,6 +55,7 @@ class AdamSLS(StochLineSearchBase):
         self.reset_option = reset_option
         self.combine_threshold = combine_threshold
         self.smooth_after = smooth_after
+        self.only_decrease = only_decrease
         if not self.smooth_after == 0:
             self.smooth = False
 
