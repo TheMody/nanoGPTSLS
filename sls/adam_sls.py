@@ -11,14 +11,13 @@ class AdamSLS(StochLineSearchBase):
                  params,
                  n_batches_per_epoch=500,
                  init_step_size=0.1,
-                 c=0.2,
+                 c=0.3,
                  gamma=2.0,
                  beta=0.999,
                  momentum=0.9,
                  gv_option='per_param',
                  base_opt='adam',
                  pp_norm_method='pp_armijo',
-                 strategy = "cycle",
                  mom_type='standard',
                  clip_grad=False,
                  beta_b=0.9,
@@ -60,7 +59,6 @@ class AdamSLS(StochLineSearchBase):
             self.smooth = False
 
         # others
-        self.strategy = strategy
         self.nextcycle = 0
         self.params = params
         paramslist = []
@@ -69,10 +67,6 @@ class AdamSLS(StochLineSearchBase):
         if self.mom_type == 'heavy_ball':
             self.params_prev = copy.deepcopy(params) 
 
-        if self.strategy == "impact_mag":
-            self.time_since_last_update = [0 for i in range(len(params))]
-            self.importance = [0.00001 for i in range(len(params))]
-            self.steps_taken = [0 for i in range(len(params))]
 
         self.momentum = momentum
         self.beta = beta
