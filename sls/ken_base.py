@@ -1,6 +1,7 @@
 import torch
 import contextlib
 import numpy as np
+import math
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 @contextlib.contextmanager
 def random_seed_torch(seed, device=0):
@@ -87,13 +88,30 @@ class StochLineSearchBase(torch.optim.Optimizer):
             else:
                 try_sgd_update(self.params, step_size, params_current, grad_current)
 
+    def basic_line_search(self,step_size,   params_current, grad_current, loss, closure_deterministic, precond=False ):
+        with torch.no_grad():
+            losses =[]
+            step_sizes = []
+            for e in range(200):
+                self.update_step( step_size, params_current, grad_current, precond=precond)
+                loss_next = closure_deterministic()
+                losses.append(loss_next)
+                step_sizes.append(step_size)
+                step_size = step_size * self.beta_b
+                if step_size < 1e-5:
+                    break
+
+        return losses, step_sizes
+
     def line_search(self, step_size, params_current, grad_current, loss, closure_deterministic, precond=False):
          with torch.no_grad():
+            # if isinstance(step_size, float):
+            #     step_size = torch.Tensor([step_size])
             found = False
             self.update_step( step_size, params_current, grad_current, precond=precond)
 
             loss_next = closure_deterministic()
-            loss_decrease = loss-loss_next
+            loss_decrease = (loss-loss_next)/math.sqrt(step_size)
             loss_dec_prev = loss_decrease
             # print("loss_decrease", loss_decrease)
             # print("step_size", step_size)
@@ -109,7 +127,7 @@ class StochLineSearchBase(torch.optim.Optimizer):
                     self.update_step( step_size, params_current, grad_current, precond=precond)
                     loss_next = closure_deterministic()
                     loss_dec_prev = loss_decrease
-                    loss_decrease = loss-loss_next
+                    loss_decrease = (loss-loss_next)/math.sqrt(step_size)
                     # print("step_size", step_size)
                     # print("loss_decrease", loss_decrease)
                 if found == False:
@@ -117,21 +135,21 @@ class StochLineSearchBase(torch.optim.Optimizer):
             else:    
                 self.update_step( step_size* self.beta_b, params_current, grad_current, precond=precond)
                 loss_next_lower = closure_deterministic()
-                loss_decrease_lower = (loss-loss_next_lower)
+                loss_decrease_lower = (loss-loss_next_lower)/math.sqrt(step_size* self.beta_b)
                 self.update_step( step_size*(1.0/ self.beta_b), params_current, grad_current, precond=precond)
                 loss_next_higher = closure_deterministic()
-                loss_decrease_higher = (loss-loss_next_higher)
+                loss_decrease_higher = (loss-loss_next_higher)/math.sqrt(step_size*(1.0/ self.beta_b))
 
                 if loss_decrease_higher > loss_decrease:
                     if loss_decrease_higher > loss_decrease_lower:
                         step_size = step_size * (1.0/ self.beta_b)
                         loss_next = loss_next_higher
-                        print("going up")
+                   #     print("going up")
                 if loss_decrease_lower > loss_decrease:
                     if loss_decrease_lower > loss_decrease_higher:
                         step_size = step_size * self.beta_b
                         loss_next = loss_next_lower
-                        print("going down")
+                     #   print("going down")
                     
 
                 #decrease= (self.avg_decrease[i] * self.beta_s + (loss-loss_next) *(1-self.beta_s) )

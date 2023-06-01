@@ -3,7 +3,8 @@ import time
 import torch
 import torch.nn.functional as F
 import numpy as np
-
+import matplotlib.pyplot as plt
+import wandb
 from .ken_base import StochLineSearchBase, get_grad_list, compute_grad_norm, random_seed_torch, try_sgd_update
 
 #gets a nested list of parameters as input
@@ -68,14 +69,16 @@ class KenSLS(StochLineSearchBase):
         # self.state['step_size'] = init_step_size
 
       #  self.avg_decrease = torch.zeros(len(params))#(0.0 for i in range(len(params))]
-        self.avg_step_size = torch.zeros(len(params))#[0.0 for i in range(len(params))]
+       # self.avg_step_size = torch.zeros(len(params))#[0.0 for i in range(len(params))]
       #  self.avg_gradient_norm_scaled = torch.zeros(len(params))#[0.0 for i in range(len(params))]
 
         self.clip_grad = clip_grad
         self.gv_option = gv_option
         self.base_opt = base_opt
         # self.step_size_method = step_size_method
-
+        self.tslls = 100
+        self.avg_step_size_slow = 1e-8
+        self.avg_step_size_fast = 1e-8
         # gv options
         self.gv_option = gv_option
         if self.gv_option in ['scalar']:
@@ -137,12 +140,12 @@ class KenSLS(StochLineSearchBase):
                     # else:
                     #     raise ValueError('%s does not exist' % self.base_opt)
             
-            momentum_vector = torch.cat([torch.flatten(mv) for mv in self.state['mv']])
-            grad_vector = torch.cat([torch.flatten(mv) for mv in grad_current])
-            cosine_similarity = F.cosine_similarity(momentum_vector, grad_vector, 0,  1e-8)
+          #  momentum_vector = torch.cat([torch.flatten(mv) for mv in self.state['mv']])
+           # grad_vector = torch.cat([torch.flatten(mv) for mv in grad_current])
+         #   cosine_similarity = F.cosine_similarity(momentum_vector, grad_vector, 0,  1e-8)
           #  print("cosine similarity:", cosine_similarity)
-            self.state["cosine_similarity"]  = cosine_similarity
-            self.state["ema_cosine_similarity"] = (1-self.beta_s)*cosine_similarity + self.beta_s * self.state["ema_cosine_similarity"]
+          #  self.state["cosine_similarity"]  = cosine_similarity
+          #  self.state["ema_cosine_similarity"] = (1-self.beta_s)*cosine_similarity + self.beta_s * self.state["ema_cosine_similarity"]
          #   print("ema cosine similarity:", self.state["ema_cosine_similarity"])
         # print("time for gv and mv calcs:", time.time()-start)
         # start = time.time()
@@ -174,7 +177,55 @@ class KenSLS(StochLineSearchBase):
                 #     self.avg_gradient_norm[i] = self.avg_gradient_norm[0]
                 #     self.avg_decrease[i] = self.avg_decrease[-1]   
 
-        step_size , loss_next = self.line_search(step_size, params_current, grad_current, loss, closure_deterministic, precond=True)
+      #  self.tslls = 1
+        # if self.state['step'] < 10:
+        #     step_size , loss_next = self.line_search(step_size, params_current, grad_current, loss, closure_deterministic, precond=True)
+        #     self.avg_step_size_slow = self.avg_step_size_slow * 0.99 + (step_size) *(1-0.99)
+        #     self.avg_step_size_fast = self.avg_step_size_fast * 0.9 + (step_size) *(1-0.9)
+        # else:
+      #  print("avg step size slow:", (self.avg_step_size_slow))#/((1-0.99)**(self.state['step']+1))))
+     #   print("avg step size fast:", (self.avg_step_size_fast)) # /((1-0.9)**(self.state['step']+1))))
+        rate_of_change = self.avg_step_size_fast /self.avg_step_size_slow
+        if rate_of_change < 1:
+            rate_of_change = 1/rate_of_change
+        neededchecks = min(10,1/((rate_of_change-1)+ 1e-8))
+      #  print("needed checks:", neededchecks)
+        if self.tslls > neededchecks:
+            step_size , loss_next = self.line_search(step_size, params_current, grad_current, loss, closure_deterministic, precond=True)
+            self.tslls  = 1
+            self.avg_step_size_slow = self.avg_step_size_slow * 0.99 + (step_size) *(1-0.99)
+            self.avg_step_size_fast = self.avg_step_size_fast * 0.9 + (step_size) *(1-0.9)
+        else:
+            loss_next  = torch.Tensor([0])
+            self.tslls += 1
+
+    #     with torch.no_grad():
+    #         loss_next  = torch.Tensor([0])
+    #         losses, step_sizes = self.basic_line_search(5e-2, params_current, grad_current, loss, closure_deterministic, precond=True)
+            
+    #         lossesdec = [(loss - l).cpu().numpy() for l in losses]
+    #         losses = [ l.cpu().numpy() for l in losses]
+    #    # step_sizes = [l.cpu().numpy() for l in step_sizes]
+    #     next_pos = np.argmax(lossesdec)
+    #     while True:
+    #         next_pos = next_pos + 1
+    #         if lossesdec[next_pos] < 0.9 * lossesdec[np.argmax(lossesdec)]:
+    #             next_pos = next_pos - 1
+    #             break
+    #     step_size = step_sizes[next_pos]
+    #     losses = np.asarray(losses) - losses[np.argmin(losses)]
+    #    # print([next_pos])
+    #    # plt.plot()
+    #     lossesdec_scaled = np.asarray(lossesdec)/np.sqrt(np.asarray(step_sizes))
+    #     step_size2 = step_sizes[np.argmax(lossesdec_scaled)]
+
+    #     plt.plot(step_sizes, losses)#,'-gD', markevery = [next_pos])
+    #     plt.scatter(step_size, losses[next_pos], c = 'r')
+    #     plt.scatter(step_size2, losses[np.argmax(lossesdec_scaled)], c = 'g')
+    #     plt.xscale('log')
+    #     plt.yscale('log')
+    #     plt.show()
+      #  wandb.log({"plot" :plt})
         #print(self.state["ema_cosine_similarity"]/(1-self.beta_s**(self.state['step']+1)))#*self.state["ema_cosine_similarity"]/((1-self.beta_s)**(self.state['step']+1))
         #print(self.state["ema_cosine_similarity"]/(1-self.beta_s**(self.state['step']+1)))
          #step_size*self.state["ema_cosine_similarity"]/(1-self.beta_s**(self.state['step']+1))

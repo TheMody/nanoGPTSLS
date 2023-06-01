@@ -365,7 +365,7 @@ while True:
                 "iter": iter_num,
                 "train/loss": lossf,
                 "lr": lr,
-                "cosine similarity":  optimizer.state["cosine_similarity"],
+              #  "cosine similarity":  optimizer.state["cosine_similarity"],
                # "loss_decrease_avg":loss_decrease_avg,
                 "loss_decrease_current":loss_decrease,
                # "gradient_norm":gradient_norm
