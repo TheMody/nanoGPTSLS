@@ -111,7 +111,7 @@ class StochLineSearchBase(torch.optim.Optimizer):
             self.update_step( step_size, params_current, grad_current, precond=precond)
 
             loss_next = closure_deterministic()
-            loss_decrease = (loss-loss_next)/math.sqrt(step_size)
+            loss_decrease = (loss-loss_next)/math.pow(step_size,(1.0/3.0) )
             loss_dec_prev = loss_decrease
             # print("loss_decrease", loss_decrease)
             # print("step_size", step_size)
@@ -127,7 +127,7 @@ class StochLineSearchBase(torch.optim.Optimizer):
                     self.update_step( step_size, params_current, grad_current, precond=precond)
                     loss_next = closure_deterministic()
                     loss_dec_prev = loss_decrease
-                    loss_decrease = (loss-loss_next)/math.sqrt(step_size)
+                    loss_decrease = (loss-loss_next)/math.pow(step_size,(1.0/3.0) )
                     # print("step_size", step_size)
                     # print("loss_decrease", loss_decrease)
                 if found == False:
@@ -135,10 +135,10 @@ class StochLineSearchBase(torch.optim.Optimizer):
             else:    
                 self.update_step( step_size* self.beta_b, params_current, grad_current, precond=precond)
                 loss_next_lower = closure_deterministic()
-                loss_decrease_lower = (loss-loss_next_lower)/math.sqrt(step_size* self.beta_b)
+                loss_decrease_lower = (loss-loss_next_lower)/math.pow( step_size* self.beta_b,(1.0/3.0) )
                 self.update_step( step_size*(1.0/ self.beta_b), params_current, grad_current, precond=precond)
                 loss_next_higher = closure_deterministic()
-                loss_decrease_higher = (loss-loss_next_higher)/math.sqrt(step_size*(1.0/ self.beta_b))
+                loss_decrease_higher = (loss-loss_next_higher)/math.pow(step_size*(1.0/ self.beta_b),(1.0/3.0) )
 
                 if loss_decrease_higher > loss_decrease:
                     if loss_decrease_higher > loss_decrease_lower:

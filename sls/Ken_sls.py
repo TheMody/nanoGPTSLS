@@ -185,6 +185,8 @@ class KenSLS(StochLineSearchBase):
         # else:
       #  print("avg step size slow:", (self.avg_step_size_slow))#/((1-0.99)**(self.state['step']+1))))
      #   print("avg step size fast:", (self.avg_step_size_fast)) # /((1-0.9)**(self.state['step']+1))))
+
+     #efficient training
         rate_of_change = self.avg_step_size_fast /self.avg_step_size_slow
         if rate_of_change < 1:
             rate_of_change = 1/rate_of_change
@@ -199,6 +201,7 @@ class KenSLS(StochLineSearchBase):
             loss_next  = torch.Tensor([0])
             self.tslls += 1
 
+    # slow but informative training
     #     with torch.no_grad():
     #         loss_next  = torch.Tensor([0])
     #         losses, step_sizes = self.basic_line_search(5e-2, params_current, grad_current, loss, closure_deterministic, precond=True)
@@ -219,13 +222,18 @@ class KenSLS(StochLineSearchBase):
     #     lossesdec_scaled = np.asarray(lossesdec)/np.sqrt(np.asarray(step_sizes))
     #     step_size2 = step_sizes[np.argmax(lossesdec_scaled)]
 
-    #     plt.plot(step_sizes, losses)#,'-gD', markevery = [next_pos])
-    #     plt.scatter(step_size, losses[next_pos], c = 'r')
-    #     plt.scatter(step_size2, losses[np.argmax(lossesdec_scaled)], c = 'g')
+    #     lossesdec_log_scaled = np.asarray(lossesdec)/np.power(np.asarray(step_sizes), (1.0/3.0))
+    #     step_size3 = step_sizes[np.argmax(lossesdec_log_scaled)]
+
+    #     plt.plot(step_sizes, lossesdec)#,'-gD', markevery = [next_pos])
+    #     plt.scatter(step_size, lossesdec[next_pos], c = 'r')
+    #     plt.scatter(step_size2, lossesdec[np.argmax(lossesdec_scaled)], c = 'g')
+    #     plt.scatter(step_size3, lossesdec[np.argmax(lossesdec_log_scaled)], c = 'y')
     #     plt.xscale('log')
-    #     plt.yscale('log')
+    #     plt.ylim((-lossesdec[np.argmax(lossesdec)]*1.1,lossesdec[np.argmax(lossesdec)])*1.1)
+    #  #   plt.yscale('log')
     #     plt.show()
-      #  wandb.log({"plot" :plt})
+       # wandb.log({"plot" :plt})
         #print(self.state["ema_cosine_similarity"]/(1-self.beta_s**(self.state['step']+1)))#*self.state["ema_cosine_similarity"]/((1-self.beta_s)**(self.state['step']+1))
         #print(self.state["ema_cosine_similarity"]/(1-self.beta_s**(self.state['step']+1)))
          #step_size*self.state["ema_cosine_similarity"]/(1-self.beta_s**(self.state['step']+1))
