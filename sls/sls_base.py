@@ -192,7 +192,7 @@ class StochLineSearchBase(torch.optim.Optimizer):
        # if isinstance(step_sizes[0], torch.Tensor):
         step_sizes = [step_size.item() if isinstance(step_size, torch.Tensor) else step_size for step_size in step_sizes]
             #step_size = step_size.item()
-     #   self.state['step_size'] = step_size
+        self.state['step_size'] = step_sizes[0]
         self.state['step_sizes'] = step_sizes
         self.state['step'] += 1
         self.state['all_step_size'].append(step_sizes)
