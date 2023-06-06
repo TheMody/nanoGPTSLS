@@ -355,9 +355,9 @@ while True:
 
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
         lr = get_lr(iter_num) if iter_num < warmup_iters else optimizer.state['step_size']
-       # avg_grad_norm = 0 if iter_num < warmup_iters else optimizer.state["grad_norm_avg"][0]
-      #  loss_decrease_avg = 0 if iter_num < warmup_iters else optimizer.state["loss_dec_avg"][0]
-      #  gradient_norm = 0 if iter_num < warmup_iters else optimizer.state["gradient_norm"][0]
+        avg_grad_norm = 0 if iter_num < warmup_iters else optimizer.state["grad_norm_avg"][0]
+        loss_decrease_avg = 0 if iter_num < warmup_iters else optimizer.state["loss_dec_avg"][0]
+        gradient_norm = 0 if iter_num < warmup_iters else optimizer.state["gradient_norm"][0]
         loss_decrease = 0 if iter_num < warmup_iters else optimizer.state["loss_decrease"]
        # print(optimizer.state["cosine_similarity"])
         if wandb_log:
@@ -366,9 +366,10 @@ while True:
                 "train/loss": lossf,
                 "lr": lr,
               #  "cosine similarity":  optimizer.state["cosine_similarity"],
-               # "loss_decrease_avg":loss_decrease_avg,
+                "loss_decrease_avg":loss_decrease_avg,
                 "loss_decrease_current":loss_decrease,
-               # "gradient_norm":gradient_norm
+                "gradient_norm":gradient_norm,
+                "avg_grad_norm":avg_grad_norm,
             })
     iter_num += 1
     local_iter_num += 1
