@@ -247,7 +247,7 @@ class AdamSLS(StochLineSearchBase):
         else:
             raise ValueError('%s does not exist' % self.pp_norm_method)
 
-        return pp_norm
+        return torch.sqrt(pp_norm)
 
     @torch.no_grad()
     def try_sgd_precond_update(self, i,params, step_size, params_current, grad_current, momentum):

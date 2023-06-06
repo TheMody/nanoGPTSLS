@@ -199,10 +199,10 @@ model.to(device)
 #optimizer_init = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
 #optimizer = Adam(model.parameters(), lr=learning_rate, betas=(beta1, beta2))
 #optimizer_init = SGD(model.parameters(), lr=learning_rate)
-#from sls.adam_sls import AdamSLS
-#optimizer = AdamSLS( [[param for name,param in model.named_parameters() if not "pooler" in name]] , c = 0.3, beta_s = 0.99 )
-from sls.Ken_sls import KenSLS
-optimizer = KenSLS( [param for name,param in model.named_parameters() if not "pooler" in name] )
+from sls.adam_sls import AdamSLS
+optimizer = AdamSLS( [[param for name,param in model.named_parameters() if not "pooler" in name]] , c = 0.5, beta_s = 0.99 )
+#from sls.Ken_sls import KenSLS
+#optimizer = KenSLS( [param for name,param in model.named_parameters() if not "pooler" in name] )
 
 if init_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])
