@@ -202,7 +202,7 @@ model.to(device)
 #from sls.adam_sls import AdamSLS
 #optimizer = AdamSLS( [[param for name,param in model.named_parameters() if not "pooler" in name]] , c = 0.5, beta_s = 0.99 )
 from sls.Ken_sls import KenSLS
-optimizer = KenSLS( [param for name,param in model.named_parameters() if not "pooler" in name] )
+optimizer = KenSLS( [param for name,param in model.named_parameters() if not "pooler" in name], log = (wandb_log and master_process) )
 
 if init_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])

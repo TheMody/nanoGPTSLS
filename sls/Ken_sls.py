@@ -31,7 +31,7 @@ class KenSLS(StochLineSearchBase):
                  line_search_fn="armijo",
                  smooth = True,
                  smooth_after = 0,
-                 only_decrease = False):
+                 only_decrease = False, log = False):
         params = list(params)
         super().__init__(params,
                          n_batches_per_epoch=n_batches_per_epoch,
@@ -67,6 +67,7 @@ class KenSLS(StochLineSearchBase):
         self.beta = beta
         self.first_step = True
         self.timescale = timescale
+        self.log = log
         # self.state['step_size'] = init_step_size
 
       #  self.avg_decrease = torch.zeros(len(params))#(0.0 for i in range(len(params))]
@@ -188,7 +189,7 @@ class KenSLS(StochLineSearchBase):
      #   print("avg step size fast:", (self.avg_step_size_fast)) # /((1-0.9)**(self.state['step']+1))))
 
      #efficient training
-        if not self.state['step'] % 10 == 0:
+        if not (self.state['step'] % 10 == 0 and self.log):
             rate_of_change = self.avg_step_size_fast /self.avg_step_size_slow
             if rate_of_change < 1:
                 rate_of_change = 1/rate_of_change
@@ -210,7 +211,6 @@ class KenSLS(StochLineSearchBase):
                 
                 lossesdec = [(loss - l).cpu().numpy() for l in losses]
                 losses = [ l.cpu().numpy() for l in losses]
-        # step_sizes = [l.cpu().numpy() for l in step_sizes]
             next_pos = np.argmax(lossesdec)
             while True:
                 next_pos = next_pos + 1
@@ -219,8 +219,6 @@ class KenSLS(StochLineSearchBase):
                     break
             step_size = step_sizes[next_pos]
             losses = np.asarray(losses) - losses[np.argmin(losses)]
-        # print([next_pos])
-        # plt.plot()
             lossesdec_scaled = np.asarray(lossesdec)/np.sqrt(np.asarray(step_sizes))
             step_size2 = step_sizes[np.argmax(lossesdec_scaled)]
 
@@ -232,25 +230,16 @@ class KenSLS(StochLineSearchBase):
             plt.scatter(step_size2, lossesdec[np.argmax(lossesdec_scaled)], c = 'g')
             plt.scatter(step_size3, lossesdec[np.argmax(lossesdec_log_scaled)], c = 'y')
             plt.xscale('log')
-        #   print()
             plt.ylim((-lossesdec[np.argmax(lossesdec)]*1.1,lossesdec[np.argmax(lossesdec)]*1.1))
-        #   plt.yscale('log')
             #plt.show()
             plt.savefig("losslandscape"+ str(self.state['step']) +".png")
             img = Image.open("losslandscape"+ str(self.state['step']) +".png")
             img = wandb.Image(img, caption="loss landscape" + str(self.state['step']))
             wandb.log({"loss landscape": img})
             plt.clf()
-            #print(self.state["ema_cosine_similarity"]/(1-self.beta_s**(self.state['step']+1)))#*self.state["ema_cosine_similarity"]/((1-self.beta_s)**(self.state['step']+1))
-            #print(self.state["ema_cosine_similarity"]/(1-self.beta_s**(self.state['step']+1)))
-            #step_size*self.state["ema_cosine_similarity"]/(1-self.beta_s**(self.state['step']+1))
+
         self.try_sgd_precond_update(self.params,step_size, params_current, grad_current, self.momentum)
 
-        # for i in range(len(self.avg_step_size)):
-        #     if i == self.nextcycle:
-        #         self.avg_step_size[i] = self.avg_step_size[i] * self.beta_s + (step_size[i]) *(1-self.beta_s)
-        
-       # print(step_sizes)
         self.step_size = step_size
         self.save_state(step_size, loss, loss_next)
 
