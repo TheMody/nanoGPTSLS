@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import wandb
 from .ken_base import StochLineSearchBase, get_grad_list, compute_grad_norm, random_seed_torch, try_sgd_update
+from PIL import Image
 
 #gets a nested list of parameters as input
 class KenSLS(StochLineSearchBase):
@@ -187,56 +188,62 @@ class KenSLS(StochLineSearchBase):
      #   print("avg step size fast:", (self.avg_step_size_fast)) # /((1-0.9)**(self.state['step']+1))))
 
      #efficient training
-        rate_of_change = self.avg_step_size_fast /self.avg_step_size_slow
-        if rate_of_change < 1:
-            rate_of_change = 1/rate_of_change
-        neededchecks = min(10,1/((rate_of_change-1)+ 1e-8))
-      #  print("needed checks:", neededchecks)
-        if self.tslls > neededchecks:
-            step_size , loss_next = self.line_search(step_size, params_current, grad_current, loss, closure_deterministic, precond=True)
-            self.tslls  = 1
-            self.avg_step_size_slow = self.avg_step_size_slow * 0.99 + (step_size) *(1-0.99)
-            self.avg_step_size_fast = self.avg_step_size_fast * 0.9 + (step_size) *(1-0.9)
+        if not self.state['step'] % 10 == 0:
+            rate_of_change = self.avg_step_size_fast /self.avg_step_size_slow
+            if rate_of_change < 1:
+                rate_of_change = 1/rate_of_change
+            neededchecks = min(10,1/((rate_of_change-1)+ 1e-8))
+        #  print("needed checks:", neededchecks)
+            if self.tslls > neededchecks:
+                step_size , loss_next = self.line_search(step_size, params_current, grad_current, loss, closure_deterministic, precond=True)
+                self.tslls  = 1
+                self.avg_step_size_slow = self.avg_step_size_slow * 0.99 + (step_size) *(1-0.99)
+                self.avg_step_size_fast = self.avg_step_size_fast * 0.9 + (step_size) *(1-0.9)
+            else:
+                loss_next  = torch.Tensor([0])
+                self.tslls += 1
         else:
-            loss_next  = torch.Tensor([0])
-            self.tslls += 1
-
     # slow but informative training
-    #     with torch.no_grad():
-    #         loss_next  = torch.Tensor([0])
-    #         losses, step_sizes = self.basic_line_search(5e-2, params_current, grad_current, loss, closure_deterministic, precond=True)
-            
-    #         lossesdec = [(loss - l).cpu().numpy() for l in losses]
-    #         losses = [ l.cpu().numpy() for l in losses]
-    #    # step_sizes = [l.cpu().numpy() for l in step_sizes]
-    #     next_pos = np.argmax(lossesdec)
-    #     while True:
-    #         next_pos = next_pos + 1
-    #         if lossesdec[next_pos] < 0.9 * lossesdec[np.argmax(lossesdec)]:
-    #             next_pos = next_pos - 1
-    #             break
-    #     step_size = step_sizes[next_pos]
-    #     losses = np.asarray(losses) - losses[np.argmin(losses)]
-    #    # print([next_pos])
-    #    # plt.plot()
-    #     lossesdec_scaled = np.asarray(lossesdec)/np.sqrt(np.asarray(step_sizes))
-    #     step_size2 = step_sizes[np.argmax(lossesdec_scaled)]
+            with torch.no_grad():
+                loss_next  = torch.Tensor([0])
+                losses, step_sizes = self.basic_line_search(5e-2, params_current, grad_current, loss, closure_deterministic, precond=True)
+                
+                lossesdec = [(loss - l).cpu().numpy() for l in losses]
+                losses = [ l.cpu().numpy() for l in losses]
+        # step_sizes = [l.cpu().numpy() for l in step_sizes]
+            next_pos = np.argmax(lossesdec)
+            while True:
+                next_pos = next_pos + 1
+                if lossesdec[next_pos] < 0.9 * lossesdec[np.argmax(lossesdec)]:
+                    next_pos = next_pos - 1
+                    break
+            step_size = step_sizes[next_pos]
+            losses = np.asarray(losses) - losses[np.argmin(losses)]
+        # print([next_pos])
+        # plt.plot()
+            lossesdec_scaled = np.asarray(lossesdec)/np.sqrt(np.asarray(step_sizes))
+            step_size2 = step_sizes[np.argmax(lossesdec_scaled)]
 
-    #     lossesdec_log_scaled = np.asarray(lossesdec)/np.power(np.asarray(step_sizes), (1.0/3.0))
-    #     step_size3 = step_sizes[np.argmax(lossesdec_log_scaled)]
+            lossesdec_log_scaled = np.asarray(lossesdec)/np.power(np.asarray(step_sizes), (1.0/3.0))
+            step_size3 = step_sizes[np.argmax(lossesdec_log_scaled)]
 
-    #     plt.plot(step_sizes, lossesdec)#,'-gD', markevery = [next_pos])
-    #     plt.scatter(step_size, lossesdec[next_pos], c = 'r')
-    #     plt.scatter(step_size2, lossesdec[np.argmax(lossesdec_scaled)], c = 'g')
-    #     plt.scatter(step_size3, lossesdec[np.argmax(lossesdec_log_scaled)], c = 'y')
-    #     plt.xscale('log')
-    #     plt.ylim((-lossesdec[np.argmax(lossesdec)]*1.1,lossesdec[np.argmax(lossesdec)])*1.1)
-    #  #   plt.yscale('log')
-    #     plt.show()
-       # wandb.log({"plot" :plt})
-        #print(self.state["ema_cosine_similarity"]/(1-self.beta_s**(self.state['step']+1)))#*self.state["ema_cosine_similarity"]/((1-self.beta_s)**(self.state['step']+1))
-        #print(self.state["ema_cosine_similarity"]/(1-self.beta_s**(self.state['step']+1)))
-         #step_size*self.state["ema_cosine_similarity"]/(1-self.beta_s**(self.state['step']+1))
+            plt.plot(step_sizes, lossesdec)#,'-gD', markevery = [next_pos])
+            plt.scatter(step_size, lossesdec[next_pos], c = 'r')
+            plt.scatter(step_size2, lossesdec[np.argmax(lossesdec_scaled)], c = 'g')
+            plt.scatter(step_size3, lossesdec[np.argmax(lossesdec_log_scaled)], c = 'y')
+            plt.xscale('log')
+        #   print()
+            plt.ylim((-lossesdec[np.argmax(lossesdec)]*1.1,lossesdec[np.argmax(lossesdec)]*1.1))
+        #   plt.yscale('log')
+            #plt.show()
+            plt.savefig("losslandscape"+ str(self.state['step']) +".png")
+            img = Image.open("losslandscape"+ str(self.state['step']) +".png")
+            img = wandb.Image(img, caption="loss landscape" + str(self.state['step']))
+            wandb.log({"loss landscape": img})
+            plt.clf()
+            #print(self.state["ema_cosine_similarity"]/(1-self.beta_s**(self.state['step']+1)))#*self.state["ema_cosine_similarity"]/((1-self.beta_s)**(self.state['step']+1))
+            #print(self.state["ema_cosine_similarity"]/(1-self.beta_s**(self.state['step']+1)))
+            #step_size*self.state["ema_cosine_similarity"]/(1-self.beta_s**(self.state['step']+1))
         self.try_sgd_precond_update(self.params,step_size, params_current, grad_current, self.momentum)
 
         # for i in range(len(self.avg_step_size)):
