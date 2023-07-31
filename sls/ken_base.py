@@ -69,6 +69,8 @@ class StochLineSearchBase(torch.optim.Optimizer):
         self.state['n_backtr'] = []
         self.budget = 0
         self.reset_option = reset_option
+        self.g_norm_momentum = 0.0
+        self.loss_decrease_momentum = 0.0
         self.new_epoch()
 
 
@@ -77,18 +79,12 @@ class StochLineSearchBase(torch.optim.Optimizer):
         raise RuntimeError("This function should not be called")
 
     def update_step(self, step_size, params_current, grad_current, precond=False):
-        if self.first_step:
-            if precond:
-                self.try_sgd_precond_update(self.params, step_size, params_current, grad_current,  momentum=self.momentum)
-            else:
-                try_sgd_update(self.params, step_size, params_current, grad_current)
+        if precond:
+            self.try_sgd_precond_update(self.params, step_size, params_current, grad_current, momentum=self.momentum)
         else:
-            if precond:
-                self.try_sgd_precond_update(self.params, step_size, params_current, grad_current, momentum=self.momentum)
-            else:
-                try_sgd_update(self.params, step_size, params_current, grad_current)
+            try_sgd_update(self.params, step_size, params_current, grad_current)
 
-    def basic_line_search(self,step_size,   params_current, grad_current, loss, closure_deterministic, precond=False ):
+    def basic_line_search(self,step_size,   params_current, grad_current, closure_deterministic, precond=False ):
         with torch.no_grad():
             losses =[]
             step_sizes = []
@@ -98,62 +94,141 @@ class StochLineSearchBase(torch.optim.Optimizer):
                 losses.append(loss_next)
                 step_sizes.append(step_size)
                 step_size = step_size * self.beta_b
-                if step_size < 5e-6:
+                if step_size < 5e-7:
                     break
 
         return losses, step_sizes
 
-    def line_search(self, step_size, params_current, grad_current, loss, closure_deterministic, precond=False):
+    def line_search(self, step_size, params_current, grad_current,g_norm, loss, closure_deterministic, precond=False):
          with torch.no_grad():
-            # if isinstance(step_size, float):
-            #     step_size = torch.Tensor([step_size])
-            found = False
-            self.update_step( step_size, params_current, grad_current, precond=precond)
+         #   beta_large = 0.5
+            beta_small = 0.995
+            beta_momentum = 0.99
+         #   armijo = True
+            small_step_size = 1e-8
+            step_size = step_size * (1.0/beta_small)
 
+            #estimate g_norm for optimizers with momentum
+            self.update_step( small_step_size, params_current, grad_current, precond=precond)
             loss_next = closure_deterministic()
-            loss_decrease = (loss-loss_next)/math.pow(step_size,(1.0/2.0) )
-            loss_dec_prev = loss_decrease
-            # print("loss_decrease", loss_decrease)
-            # print("step_size", step_size)
+            loss_decrease = (loss-loss_next)
+            g_norm = loss_decrease / small_step_size
+            while g_norm == 0.0#abs(loss_decrease)  < 2e-7:
+                print("g_norm is zero, this indicates a numerical error, most likely training should be stopped, increasing min step size")
+             #   print("loss decrease too small, increasing min step size")
+                self.state['numerical_error'] += 1
+                small_step_size = small_step_size * 10
+                self.update_step( small_step_size, params_current, grad_current, precond=precond)
+                loss_next = closure_deterministic()
+                loss_decrease = (loss-loss_next)
+                g_norm = loss_decrease / small_step_size
 
-            if loss_decrease < 0.0:# and self.first_step:
-                print("negative loss decrease starting strong step size decrease")
-                for e in range(200):
-                    if loss_dec_prev > loss_decrease and loss_decrease > 0.0:
-                        found = True
-                        step_size = step_size * (1.0 /  self.beta_b)
-                        break
+            self.g_norm_momentum = g_norm * (1-beta_momentum) + self.g_norm_momentum * beta_momentum
+          #  print(g_norm)
+
+            self.update_step( step_size, params_current, grad_current, precond=precond)
+            loss_next = closure_deterministic()
+            loss_decrease = (loss-loss_next)
+            self.loss_decrease_momentum_temp = loss_decrease * (1-beta_momentum) + self.loss_decrease_momentum * beta_momentum
+            loss_dec_prev = 0.0
+            #c = self.c if g_norm > 0.0 else 1.0/self.c
+            for e in range(100):#
+             #   print(step_size)
+                if step_size < small_step_size:
+                    step_size = step_size * (1.0 /  self.beta_b)
+                   # print("step size too small", step_size)
+                    break
+                if self.loss_decrease_momentum_temp < self.g_norm_momentum * self.c * step_size: #armijo condition not fullfilled -> decrease step size
+                    armijo = False
                     step_size = step_size * self.beta_b
                     self.update_step( step_size, params_current, grad_current, precond=precond)
                     loss_next = closure_deterministic()
                     loss_dec_prev = loss_decrease
-                    loss_decrease = (loss-loss_next)/math.pow(step_size,(1.0/2.0) )
-                    # print("step_size", step_size)
-                    # print("loss_decrease", loss_decrease)
-                if found == False:
-                    print("no step size found")
-            else:    
-                self.update_step( step_size* self.beta_b, params_current, grad_current, precond=precond)
-                loss_next_lower = closure_deterministic()
-                loss_decrease_lower = (loss-loss_next_lower)/math.pow( step_size* self.beta_b,(1.0/2.0) )
-                self.update_step( step_size*(1.0/ self.beta_b), params_current, grad_current, precond=precond)
-                loss_next_higher = closure_deterministic()
-                loss_decrease_higher = (loss-loss_next_higher)/math.pow(step_size*(1.0/ self.beta_b),(1.0/2.0) )
+                    loss_decrease = (loss-loss_next)
+                    self.loss_decrease_momentum_temp = loss_decrease * (1-beta_momentum) + self.loss_decrease_momentum * beta_momentum
+               #     print("decreasing because armijo not satisfied")
+                else:
+                    break
+                #     if not armijo:
+                #         if loss_dec_prev > loss_decrease:
+                #             step_size = step_size * (1.0 /  self.beta_b)
+                #             break
+                #         step_size = step_size * self.beta_b
+                #         self.update_step( step_size, params_current, grad_current, precond=precond)
+                #         loss_next = closure_deterministic()
+                #         loss_dec_prev = loss_decrease
+                #         loss_decrease = (loss-loss_next)
+                #    #     self.loss_decrease_momentum_temp = loss_decrease * (1-beta_momentum) + self.loss_decrease_momentum * beta_momentum
+                #         print("decreasing because armijo was not satisfied and finding max")
+                #     else:
+                        # self.update_step( step_size* beta_small, params_current, grad_current, precond=precond)
+                        # loss_next_lower = closure_deterministic()
+                        # loss_decrease_lower = (loss-loss_next_lower)
+                        # if loss_decrease_lower > loss_decrease:
+                        #         step_size = step_size * beta_small
+                        #         loss_next = loss_next_lower
+                        #         print("going down")
+                        #         break
+                        # else:    
+                        #     self.update_step( step_size*(1.0/ beta_small), params_current, grad_current, precond=precond)
+                        #     loss_next_higher = closure_deterministic()
+                        #     loss_decrease_higher = (loss-loss_next_higher)
+                        #     if loss_decrease_higher > loss_decrease:
+                        #             step_size = step_size * (1.0/ beta_small)
+                        #             loss_next = loss_next_higher
+                        #             print("going up")
+                        #     break
 
-                if loss_decrease_higher > loss_decrease:
-                    if loss_decrease_higher > loss_decrease_lower:
-                        step_size = step_size * (1.0/ self.beta_b)
-                        loss_next = loss_next_higher
+            self.loss_decrease_momentum = loss_decrease * (1-beta_momentum) + self.loss_decrease_momentum * beta_momentum
+         #   print("local c = ",loss_decrease/(g_norm*step_size))
+          #  print("average c = ",self.loss_decrease_momentum/(self.g_norm_momentum*step_size))
+            # print("loss_decrease", loss_decrease)
+            # print("step_size", step_size)
+
+            # if loss_decrease < 0.0:# and self.first_step:
+            #     print("negative loss decrease starting strong step size decrease")
+            #     for e in range(200):
+            #         if loss_dec_prev > loss_decrease and loss_decrease > 0.0:
+            #             found = True
+            #             step_size = step_size * (1.0 /  self.beta_b)
+            #             break
+            #         step_size = step_size * self.beta_b
+            #         self.update_step( step_size, params_current, grad_current, precond=precond)
+            #         loss_next = closure_deterministic()
+            #         loss_dec_prev = loss_decrease
+            #         loss_decrease = (loss-loss_next)
+            #         # print("step_size", step_size)
+            #         # print("loss_decrease", loss_decrease)
+            #     if found == False:
+            #         print("no step size found")
+            # else:    
+            #     self.update_step( step_size* self.beta_b, params_current, grad_current, precond=precond)
+            #     loss_next_lower = closure_deterministic()
+            #     loss_decrease_lower = (loss-loss_next_lower)
+            #     if loss_decrease_lower > loss_decrease:
+            #        # if loss_decrease_lower > loss_decrease_higher:
+            #             step_size = step_size * self.beta_b
+            #             loss_next = loss_next_lower
+            #          #   print("going down")
+            #     else:    
+            #         self.update_step( step_size*(1.0/ self.beta_b), params_current, grad_current, precond=precond)
+            #         loss_next_higher = closure_deterministic()
+            #         loss_decrease_higher = (loss-loss_next_higher)
+
+            #         if loss_decrease_higher > loss_decrease:
+            #            # if loss_decrease_higher > loss_decrease_lower:
+            #                 step_size = step_size * (1.0/ self.beta_b)
+            #                 loss_next = loss_next_higher
                    #     print("going up")
-                if loss_decrease_lower > loss_decrease:
-                    if loss_decrease_lower > loss_decrease_higher:
-                        step_size = step_size * self.beta_b
-                        loss_next = loss_next_lower
-                     #   print("going down")
-                    
+               
 
                 #decrease= (self.avg_decrease[i] * self.beta_s + (loss-loss_next) *(1-self.beta_s) )
             self.state['loss_decrease'] = loss -loss_next
+            self.state['gradient_norm'] = g_norm
+            self.state['c'] = loss_decrease/(g_norm*step_size)
+            self.state['average c'] = self.loss_decrease_momentum/(self.g_norm_momentum*step_size)
+            self.state['loss_decrease_momentum'] = self.loss_decrease_momentum
+            self.state['g_norm_momentum'] = self.g_norm_momentum
                
           #  print("found step size:", step_size)
             return step_size, loss_next

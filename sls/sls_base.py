@@ -90,7 +90,7 @@ class StochLineSearchBase(torch.optim.Optimizer):
                 found = 0
 
                 
-                for e in range(100):
+                for e in range(200):
                     # try a prospective step
                     if self.first_step:
                         if precond:
@@ -106,6 +106,8 @@ class StochLineSearchBase(torch.optim.Optimizer):
                     # compute the loss at the next step; no need to compute gradients.
                     loss_next = closure_deterministic()
                     self.state['loss_decrease'] = loss-loss_next
+                   # print(step_size)
+                    #print(loss-loss_next)
                     decrease= (self.avg_decrease[i] * self.beta_s + (loss-loss_next) *(1-self.beta_s) )#/((1-self.beta)**((self.state['step']+1)/len(self.avg_decrease)))
 
                     self.state['n_forwards'] += 1
@@ -132,7 +134,7 @@ class StochLineSearchBase(torch.optim.Optimizer):
                             self.avg_decrease[i]  = self.avg_decrease[i] * self.beta_s + (loss-loss_next) *(1-self.beta_s) 
                             break
                     else: 
-                        print("loss is not decreasing, decreasing step size")
+                   #     print("loss is not decreasing, decreasing step size")
                         step_size = step_size * self.beta_b
               #  self.backtracks  = e
                 # if line search exceeds max_epochs
@@ -192,7 +194,7 @@ class StochLineSearchBase(torch.optim.Optimizer):
        # if isinstance(step_sizes[0], torch.Tensor):
         step_sizes = [step_size.item() if isinstance(step_size, torch.Tensor) else step_size for step_size in step_sizes]
             #step_size = step_size.item()
-        self.state['step_size'] = step_sizes[0]
+     #   self.state['step_size'] = step_size
         self.state['step_sizes'] = step_sizes
         self.state['step'] += 1
         self.state['all_step_size'].append(step_sizes)

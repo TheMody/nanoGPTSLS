@@ -202,7 +202,7 @@ model.to(device)
 #from sls.adam_sls import AdamSLS
 #optimizer = AdamSLS( [[param for name,param in model.named_parameters() if not "pooler" in name]] , c = 0.5, beta_s = 0.99 )
 from sls.Ken_sls import KenSLS
-optimizer = KenSLS( [param for name,param in model.named_parameters() if not "pooler" in name], log = (wandb_log and master_process) )
+optimizer = KenSLS( [param for name,param in model.named_parameters() if not "pooler" in name], log = (wandb_log and master_process), c = 0.3 )
 
 if init_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])
@@ -360,8 +360,7 @@ while True:
        # gradient_norm = 0 if iter_num < warmup_iters else optimizer.state["gradient_norm"][0]
         loss_decrease = 0 if iter_num < warmup_iters else optimizer.state["loss_decrease"]
        # print(optimizer.state["cosine_similarity"])
-        if wandb_log:
-            wandb.log({
+        log_dict = {
                 "iter": iter_num,
                 "train/loss": lossf,
                 "lr": lr,
@@ -370,7 +369,15 @@ while True:
                 "loss_decrease_current":loss_decrease,
                # "gradient_norm":gradient_norm,
                # "avg_grad_norm":avg_grad_norm,
-            })
+            }
+        log_dict["c"] = optimizer.state["c"]
+        log_dict["gradient_norm"] = optimizer.state["gradient_norm"]
+        log_dict["average c"] = optimizer.state["average c"]
+        log_dict["loss_decrease"] = optimizer.state["loss_decrease"]
+        log_dict["loss_decrease_momentum"] = optimizer.state["loss_decrease_momentum"]
+        log_dict["g_norm_momentum"] = optimizer.state["g_norm_momentum"]
+        if wandb_log:
+            wandb.log(log_dict)
     iter_num += 1
     local_iter_num += 1
 
