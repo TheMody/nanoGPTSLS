@@ -269,7 +269,7 @@ while True:
     #     param_group['lr'] = lr
 
     # evaluate the loss on train/val sets and write checkpoints
-    if iter_num % eval_interval == 0 and master_process:
+    if (iter_num+1) % eval_interval == 0 and master_process:
         losses = estimate_loss()
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
         if wandb_log:
@@ -292,7 +292,7 @@ while True:
                     'config': config,
                 }
                 print(f"saving checkpoint to {out_dir}")
-                torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
+                torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'+ str(iter_num)))
     if iter_num == 0 and eval_only:
         break
 
@@ -301,7 +301,7 @@ while True:
       #  ixs = []
         accloss = 0.0
         torch.manual_seed( (iter_num+1) * (ddp_local_rank*47+1) * (ddp_rank*31+1))
-        ix = torch.randint(len(train_data) - block_size, (batch_size,)) #most likely something not right here we get negative loss decreases seems unlikely on the same batch ... could not find anything
+        ix = torch.randint(len(train_data) - block_size, (batch_size,)) 
       #  ixs.append(ix)
         X, Y = get_batch('train', ix)
         for micro_step in range(gradient_accumulation_steps):
