@@ -192,9 +192,6 @@ if block_size < model.config.block_size:
     model_args['block_size'] = block_size # so that the checkpoint will have the right value
 model.to(device)
 
-# initialize a GradScaler. If enabled=False scaler is a no-op
-#scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
-
 # optimizer
 #optimizer_init = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
 #optimizer = Adam(model.parameters(), lr=learning_rate, betas=(beta1, beta2))
@@ -202,7 +199,7 @@ model.to(device)
 #from sls.adam_sls import AdamSLS
 #optimizer = AdamSLS( [[param for name,param in model.named_parameters() if not "pooler" in name]] , c = 0.5, beta_s = 0.99 )
 from sls.Ken_sls import KenSLS
-optimizer = KenSLS( [param for name,param in model.named_parameters() if not "pooler" in name], log = (wandb_log and master_process), c = 0.3 )
+optimizer = KenSLS( [param for name,param in model.named_parameters() if not "pooler" in name], c = 0.5 )
 
 if init_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])
@@ -262,12 +259,6 @@ local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
 while True:
-
-    # determine and set the learning rate for this iteration
-    # lr = get_lr(iter_num) if decay_lr else learning_rate
-    # for param_group in optimizer.param_groups:
-    #     param_group['lr'] = lr
-
     # evaluate the loss on train/val sets and write checkpoints
     if (iter_num+1) % eval_interval == 0 and master_process:
         losses = estimate_loss()
@@ -277,8 +268,6 @@ while True:
                 "iter": iter_num,
                 "train/loss": losses['train'],
                 "val/loss": losses['val'],
-               # "lr": lr,
-              #  "mfu": running_mfu*100, # convert to percentage
             })
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
@@ -298,11 +287,9 @@ while True:
 
 
     def closure(backward = False):
-      #  ixs = []
         accloss = 0.0
         torch.manual_seed( (iter_num+1) * (ddp_local_rank*47+1) * (ddp_rank*31+1))
         ix = torch.randint(len(train_data) - block_size, (batch_size,)) 
-      #  ixs.append(ix)
         X, Y = get_batch('train', ix)
         for micro_step in range(gradient_accumulation_steps):
             if ddp:
@@ -313,33 +300,20 @@ while True:
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             ix = torch.randint(len(train_data) - block_size, (batch_size,))
             X, Y = get_batch('train', ix)
-          #  ixs.append(ix)
             if backward:
                 loss.backward()
             accloss = accloss + loss
         if ddp:
             dist.barrier()
             dist.all_reduce(accloss, dist.ReduceOp.AVG, async_op=False)
-        # clip the gradient
         if grad_clip != 0.0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         return accloss
    
     def closure_with_backward():
         return closure(backward=True)
-
-   # if iter_num >= warmup_iters:
     optimizer.zero_grad(set_to_none=True)
     loss = optimizer.step(closure = closure, closure_with_backward = closure_with_backward)
-    # else:
-    # lr = get_lr(iter_num) if decay_lr else learning_rate
-    # for param_group in optimizer.param_groups:
-    #     param_group['lr'] = lr
-    # loss = closure_with_backward()
-    # optimizer.step()
-    # #scaler.update()
-    # # flush the gradients as soon as we can, no need for this memory anymore
-    # optimizer.zero_grad(set_to_none=True)
 
     # timing and logging
     t1 = time.time()
@@ -354,28 +328,18 @@ while True:
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
 
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
-        lr = get_lr(iter_num) if iter_num < warmup_iters else optimizer.state['step_size']
-      #  avg_grad_norm = 0 if iter_num < warmup_iters else optimizer.state["grad_norm_avg"][0]
-       # loss_decrease_avg = 0 if iter_num < warmup_iters else optimizer.state["loss_dec_avg"][0]
-       # gradient_norm = 0 if iter_num < warmup_iters else optimizer.state["gradient_norm"][0]
-        loss_decrease = 0 if iter_num < warmup_iters else optimizer.state["loss_decrease"]
-       # print(optimizer.state["cosine_similarity"])
         log_dict = {
                 "iter": iter_num,
                 "train/loss": lossf,
-                "lr": lr,
-              #  "cosine similarity":  optimizer.state["cosine_similarity"],
-             #   "loss_decrease_avg":loss_decrease_avg,
-                "loss_decrease_current":loss_decrease,
-               # "gradient_norm":gradient_norm,
-               # "avg_grad_norm":avg_grad_norm,
+                "lr": optimizer.state['step_size'],
             }
-        log_dict["c"] = optimizer.state["c"]
-        log_dict["gradient_norm"] = optimizer.state["gradient_norm"]
-        log_dict["average c"] = optimizer.state["average c"]
         log_dict["loss_decrease"] = optimizer.state["loss_decrease"]
-        log_dict["loss_decrease_momentum"] = optimizer.state["loss_decrease_momentum"]
-        log_dict["g_norm_momentum"] = optimizer.state["g_norm_momentum"]
+        log_dict["gradient_norm"] = optimizer.state["gradient_norm"]
+        log_dict["gradient_norm_momentum"] = optimizer.state["g_norm_momentum"]
+        log_dict["loss_dec_momentum"] = optimizer.state["l_dec_momentum"]
+        log_dict["c"] = optimizer.state["c"]
+        log_dict["average c"] = optimizer.state["average c"]
+        log_dict["forward_passes"] = optimizer.state["forward_passes"]
         if wandb_log:
             wandb.log(log_dict)
     iter_num += 1

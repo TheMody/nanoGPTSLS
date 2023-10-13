@@ -8,10 +8,10 @@ wandb_run_name='gpt2-124M'
 
 # these make the total batch size be ~0.5M
 # 12 batch size * 1024 block size * 5 gradaccum * 8 GPUs = 491,520
-# 28*18*1024 = 516096 12 batch size is a bit small for A40s so 18 makes more sense
-batch_size = 5
+# 28*18*1024 = 516,096 token per batch 12 batch size is a bit small for A40s so 18 makes more sense
+batch_size = 18
 block_size = 1024
-gradient_accumulation_steps = 96
+gradient_accumulation_steps = 28
 
 # this makes total number of tokens be 300B
 max_iters = 600000
