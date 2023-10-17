@@ -193,13 +193,13 @@ if block_size < model.config.block_size:
 model.to(device)
 
 # optimizer
-#optimizer_init = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+optimizer_init = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
 #optimizer = Adam(model.parameters(), lr=learning_rate, betas=(beta1, beta2))
 #optimizer_init = SGD(model.parameters(), lr=learning_rate)
 #from sls.adam_sls import AdamSLS
 #optimizer = AdamSLS( [[param for name,param in model.named_parameters() if not "pooler" in name]] , c = 0.5, beta_s = 0.99 )
 from sls.Ken_sls import KenSLS
-optimizer = KenSLS( [param for name,param in model.named_parameters() if not "pooler" in name], c = 0.5 )
+optimizer = KenSLS( [param for name,param in model.named_parameters() if not "pooler" in name], c = 0.3, clip_grad = True )
 
 if init_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])
@@ -259,6 +259,8 @@ local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
 while True:
+
+
     # evaluate the loss on train/val sets and write checkpoints
     if (iter_num+1) % eval_interval == 0 and master_process:
         losses = estimate_loss()
@@ -312,8 +314,18 @@ while True:
    
     def closure_with_backward():
         return closure(backward=True)
-    optimizer.zero_grad(set_to_none=True)
-    loss = optimizer.step(closure = closure, closure_with_backward = closure_with_backward)
+
+        # determine and set the learning rate for this iteration
+    if warmup_iters > 0 and iter_num < warmup_iters:
+        lr = get_lr(iter_num) if decay_lr else learning_rate
+        for param_group in optimizer_init.param_groups:
+            param_group['lr'] = lr
+        optimizer_init.zero_grad(set_to_none=True)
+        loss = closure_with_backward()
+        optimizer_init.step()
+    else:
+        optimizer.zero_grad(set_to_none=True)
+        loss = optimizer.step(closure = closure, closure_with_backward = closure_with_backward)
 
     # timing and logging
     t1 = time.time()
@@ -326,12 +338,15 @@ while True:
         if local_iter_num >= 5: # let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
-
+        if warmup_iters > 0 and iter_num < warmup_iters:
+            lr = get_lr(iter_num) if decay_lr else learning_rate
+        else:
+            lr =  optimizer.state['step_size']
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
         log_dict = {
                 "iter": iter_num,
                 "train/loss": lossf,
-                "lr": optimizer.state['step_size'],
+                "lr": lr,
             }
         log_dict["loss_decrease"] = optimizer.state["loss_decrease"]
         log_dict["gradient_norm"] = optimizer.state["gradient_norm"]
