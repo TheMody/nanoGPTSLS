@@ -2,6 +2,7 @@ import copy
 import time
 import torch
 from .ken_base import StochLineSearchBase, get_grad_list, compute_grad_norm, random_seed_torch, try_sgd_update
+import torch.nn.functional as F
 
 #gets a nested list of parameters as input
 class KenSLS(StochLineSearchBase):
@@ -299,7 +300,9 @@ class KenSLS(StochLineSearchBase):
 
         else:
             raise ValueError('%s does not exist' % self.pp_norm_method)
-
+        grad_vector = torch.cat([g_i.flatten() for g_i in grad_current])
+        momentum_vector = torch.cat([mv_i.flatten() for mv_i in self.state["mv"]])
+        self.state["cosine_similarity"] = F.cosine_similarity(grad_vector, momentum_vector, dim = 0)
         return pp_norm
 
 def scale_vector(vector, alpha, step, eps=1e-8):

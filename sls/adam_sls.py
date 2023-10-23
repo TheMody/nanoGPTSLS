@@ -212,7 +212,8 @@ class AdamSLS(StochLineSearchBase):
                 self.nextcycle = 0
         
        # print(step_sizes)
-                
+        
+        self.state["step_size"] = step_sizes[0]
         self.save_state(step_sizes, loss, loss_next, grad_norm)
 
         if not self.combine_threshold == 0:
