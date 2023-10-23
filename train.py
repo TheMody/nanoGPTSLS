@@ -348,6 +348,7 @@ while True:
                 "train/loss": lossf,
                 "lr": lr,
             }
+        log_dict["cosine_similarity"] = optimizer.state["cosine_similarity"]
         log_dict["loss_decrease"] = optimizer.state["loss_decrease"]
         log_dict["gradient_norm"] = optimizer.state["gradient_norm"]
         log_dict["gradient_norm_momentum"] = optimizer.state["g_norm_momentum"]
