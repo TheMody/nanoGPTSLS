@@ -53,9 +53,9 @@ batch_size = 6 # if gradient_accumulation_steps > 1, this is the micro-batch siz
 block_size = 1024
 # model
 model_name = "mamba" #mamba #gpt2
-n_layer = 2
-n_head = 4
-n_embd = 256
+n_layer = 12
+n_head = 12
+n_embd = 768
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
 # adamw optimizer
