@@ -5,7 +5,7 @@
 wandb_log = True
 wandb_project = 'owt'
 wandb_run_name='mamba'
-
+model_name = "mamba"
 # these make the total batch size be ~0.5M
 # 12 batch size * 1024 block size * 5 gradaccum * 8 GPUs = 491,520
 # 28*18*1024 = 516,096 token per batch 12 batch size is a bit small for A40s so 18 makes more sense
