@@ -19,7 +19,6 @@ $ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123
 import os
 import time
 import math
-import pickle
 from contextlib import nullcontext
 
 import numpy as np
@@ -27,12 +26,14 @@ import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 from torch.distributed import init_process_group, destroy_process_group
-from torch.optim import Adam, SGD
-
+import torch.nn.functional as F
 from model import GPTConfig, GPT
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
+#optimizer
+optim = "adam" #adam
+
 # I/O
 out_dir = 'out'
 eval_interval = 2000
@@ -42,18 +43,19 @@ eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 # wandb logging
-wandb_log = False # disabled by default
+wandb_log = True # disabled by default
 wandb_project = 'owt'
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
 # data
 dataset = 'openwebtext'
-gradient_accumulation_steps = 40  # used to simulate larger batch sizes
-batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
+gradient_accumulation_steps = 40 *2 # used to simulate larger batch sizes
+batch_size = 6 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
 # model
-n_layer = 12
-n_head = 12
-n_embd = 768
+model_name = "mamba" #mamba #gpt2
+n_layer = 2
+n_head = 4
+n_embd = 256
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
 # adamw optimizer
@@ -65,7 +67,7 @@ beta2 = 0.95
 grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
 # learning rate decay settings
 decay_lr = True # whether to decay the learning rate
-warmup_iters = 0 # how many steps to warm up for
+warmup_iters = 100 # how many steps to warm up for
 lr_decay_iters = 600000 # should be ~= max_iters per Chinchilla
 min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 # DDP settings
@@ -130,80 +132,36 @@ def get_batch(split, ix = None):
         x, y = x.to(device), y.to(device)
     return x, y
 
-# init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 0
 best_val_loss = 1e9
 
-# attempt to derive vocab_size from the dataset
-meta_path = os.path.join(data_dir, 'meta.pkl')
-meta_vocab_size = None
-if os.path.exists(meta_path):
-    with open(meta_path, 'rb') as f:
-        meta = pickle.load(f)
-    meta_vocab_size = meta['vocab_size']
-    print(f"found vocab_size = {meta_vocab_size} (inside {meta_path})")
 
 # model init
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
                   bias=bias, vocab_size=None, dropout=dropout) # start with model_args from command line
-if init_from == 'scratch':
+if model_name == 'gpt2':
     # init a new model from scratch
     print("Initializing a new model from scratch")
     # determine the vocab size we'll use for from-scratch training
-    if meta_vocab_size is None:
-        print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
-    model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
+    print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
+    model_args['vocab_size'] =  50304
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
-elif init_from == 'resume':
-    print(f"Resuming training from {out_dir}")
-    # resume training from a checkpoint.
-    ckpt_path = os.path.join(out_dir, 'ckpt.pt')
-    checkpoint = torch.load(ckpt_path, map_location=device)
-    checkpoint_model_args = checkpoint['model_args']
-    # force these config attributes to be equal otherwise we can't even resume training
-    # the rest of the attributes (e.g. dropout) can stay as desired from command line
-    for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
-        model_args[k] = checkpoint_model_args[k]
-    # create the model
-    gptconf = GPTConfig(**model_args)
-    model = GPT(gptconf)
-    state_dict = checkpoint['model']
-    # fix the keys of the state dictionary :(
-    # honestly no idea how checkpoints sometimes get this prefix, have to debug more
-    unwanted_prefix = '_orig_mod.'
-    for k,v in list(state_dict.items()):
-        if k.startswith(unwanted_prefix):
-            state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
-    model.load_state_dict(state_dict)
-    iter_num = checkpoint['iter_num']
-    best_val_loss = checkpoint['best_val_loss']
-elif init_from.startswith('gpt2'):
-    print(f"Initializing from OpenAI GPT-2 weights: {init_from}")
-    # initialize from OpenAI GPT-2 weights
-    override_args = dict(dropout=dropout)
-    model = GPT.from_pretrained(init_from, override_args)
-    # read off the created config params, so we can store them into checkpoint correctly
-    for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
-        model_args[k] = getattr(model.config, k)
-# crop down the model block size if desired, using model surgery
-if block_size < model.config.block_size:
-    model.crop_block_size(block_size)
-    model_args['block_size'] = block_size # so that the checkpoint will have the right value
-model.to(device)
+if model_name == 'mamba':
+    from mambapy.lm import LM, MambaConfig
+    config = MambaConfig(d_model=n_embd, n_layers=n_layer) # core model
+    model_args['vocab_size'] =  50304
+    model = LM(config, vocab_size=model_args['vocab_size']) # encapsulate it in a LM  
+
+model = model.to(device)
 
 # optimizer
-optimizer_init = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
-#optimizer = Adam(model.parameters(), lr=learning_rate, betas=(beta1, beta2))
-#optimizer_init = SGD(model.parameters(), lr=learning_rate)
-#from sls.adam_sls import AdamSLS
-#optimizer = AdamSLS( [[param for name,param in model.named_parameters() if not "pooler" in name]] , c = 0.5, beta_s = 0.99 )
-from sls.Ken_sls import KenSLS
-optimizer = KenSLS( [param for name,param in model.named_parameters() if not "pooler" in name], c = 0.3, clip_grad = True )
+if optim == "salsa":
+    from salsa.SaLSA import SaLSA 
+    optimizer = SaLSA( [param for name,param in model.named_parameters() if not "pooler" in name] , use_mv=True , weight_decay=weight_decay)
+if optim == "adam":
+    optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
 
-if init_from == 'resume':
-    optimizer.load_state_dict(checkpoint['optimizer'])
-checkpoint = None # free up memory
 
 # compile the model
 if compile:
@@ -225,7 +183,8 @@ def estimate_loss():
         for k in range(eval_iters):
             X, Y = get_batch(split)
             with ctx:
-                logits, loss = model(X, Y)
+                logits = model(X)
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1), ignore_index=-1)
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
@@ -257,7 +216,6 @@ X, Y = get_batch('train') # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
-running_mfu = -1.0
 while True:
 
 
@@ -288,7 +246,7 @@ while True:
         break
 
 
-    def closure(backward = False):
+    def closure(backwards = False):
         accloss = 0.0
         torch.manual_seed( (iter_num+1) * (ddp_local_rank*47+1) * (ddp_rank*31+1))
         ix = torch.randint(len(train_data) - block_size, (batch_size,)) 
@@ -297,12 +255,13 @@ while True:
             if ddp:
                 model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
             with ctx:
-                logits, loss = model(X, Y)
+                logits = model(X)
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1), ignore_index=-1)
                 loss = loss / gradient_accumulation_steps  # scale the loss to account for gradient accumulation
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             ix = torch.randint(len(train_data) - block_size, (batch_size,))
             X, Y = get_batch('train', ix)
-            if backward:
+            if backwards:
                 loss.backward()
             accloss = accloss + loss
         if ddp:
@@ -312,20 +271,18 @@ while True:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         return accloss
    
-    def closure_with_backward():
-        return closure(backward=True)
 
         # determine and set the learning rate for this iteration
-    if warmup_iters > 0 and iter_num < warmup_iters:
-        lr = get_lr(iter_num) if decay_lr else learning_rate
-        for param_group in optimizer_init.param_groups:
+    if optim == "adam":
+        lr = get_lr(iter_num+1) if decay_lr else learning_rate
+        for param_group in optimizer.param_groups:
             param_group['lr'] = lr
-        optimizer_init.zero_grad(set_to_none=True)
-        loss = closure_with_backward()
-        optimizer_init.step()
-    else:
         optimizer.zero_grad(set_to_none=True)
-        loss = optimizer.step(closure = closure, closure_with_backward = closure_with_backward)
+        loss = closure(backwards=True)
+        optimizer.step()
+    if optim == "salsa":
+        optimizer.zero_grad(set_to_none=True)
+        loss = optimizer.step(closure = closure)
 
     # timing and logging
     t1 = time.time()
@@ -335,27 +292,17 @@ while True:
         # get loss as float. note: this is a CPU-GPU sync point
         # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
         lossf = loss.item() #* gradient_accumulation_steps
-        if local_iter_num >= 5: # let the training loop settle a bit
-            mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
-            running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
-        if warmup_iters > 0 and iter_num < warmup_iters:
-            lr = get_lr(iter_num) if decay_lr else learning_rate
-        else:
-            lr =  optimizer.state['step_size']
-        print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+        if optim == "adam":
+            lr = get_lr(iter_num+1) if decay_lr else learning_rate
+        if optim == "salsa":
+            lr =  optimizer.state['step_sizes']
         log_dict = {
                 "iter": iter_num,
                 "train/loss": lossf,
                 "lr": lr,
+                "time": dt,
             }
-        log_dict["cosine_similarity"] = optimizer.state["cosine_similarity"]
-        log_dict["loss_decrease"] = optimizer.state["loss_decrease"]
-        log_dict["gradient_norm"] = optimizer.state["gradient_norm"]
-        log_dict["gradient_norm_momentum"] = optimizer.state["g_norm_momentum"]
-        log_dict["loss_dec_momentum"] = optimizer.state["l_dec_momentum"]
-        log_dict["c"] = optimizer.state["c"]
-        log_dict["average c"] = optimizer.state["average c"]
-        log_dict["forward_passes"] = optimizer.state["forward_passes"]
+        print(log_dict)
         if wandb_log:
             wandb.log(log_dict)
     iter_num += 1
