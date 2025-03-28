@@ -48,14 +48,14 @@ wandb_project = 'owt'
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
 # data
 dataset = 'openwebtext'
-gradient_accumulation_steps = 40 *2 # used to simulate larger batch sizes
+gradient_accumulation_steps = 40 *2 # used to simulate larger batch sizesasdSA
 batch_size = 6 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
 # model
 model_name = "mamba" #mamba #gpt2
-n_layer = 12
-n_head = 12
-n_embd = 768
+n_layer = 2
+n_head = 4
+n_embd = 256
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
 # adamw optimizer
@@ -295,7 +295,7 @@ while True:
         if optim == "adam":
             lr = get_lr(iter_num+1) if decay_lr else learning_rate
         if optim == "salsa":
-            lr =  optimizer.state['step_sizes']
+            lr =  optimizer.state['lr']
         log_dict = {
                 "iter": iter_num,
                 "train/loss": lossf,
