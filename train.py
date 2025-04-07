@@ -52,7 +52,7 @@ gradient_accumulation_steps = 40 *2 # used to simulate larger batch sizesasdSA
 batch_size = 6 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
 # model
-model_name = "mamba" #mamba #gpt2
+model_name = "gpt2" #mamba #gpt2
 n_layer = 2
 n_head = 4
 n_embd = 256
@@ -158,7 +158,7 @@ model = model.to(device)
 # optimizer
 if optim == "salsa":
     from salsa.SaLSA import SaLSA 
-    optimizer = SaLSA( [param for name,param in model.named_parameters() if not "pooler" in name] , use_mv=True , weight_decay=weight_decay)
+    optimizer = SaLSA( [param for name,param in model.named_parameters() if not "pooler" in name] ,momentum=(0.9,0.999,0.99), use_mv=True , weight_decay=weight_decay)
 if optim == "adam":
     optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
 
