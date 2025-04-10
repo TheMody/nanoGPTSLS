@@ -35,7 +35,7 @@ from model import GPTConfig, GPT
 optim = "adam" #adam
 
 # I/O
-out_dir = 'out'
+
 eval_interval = 2000
 log_interval = 1
 eval_iters = 40
@@ -45,14 +45,15 @@ init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 # wandb logging
 wandb_log = True # disabled by default
 wandb_project = 'owt'
-wandb_run_name = 'gpt2' # 'run' + str(time.time())
+
 # data
 dataset = 'openwebtext'
 gradient_accumulation_steps = 40 *2 # used to simulate larger batch sizesasdSA
 batch_size = 6 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
 # model
-model_name = "gpt2" #mamba #gpt2
+model_name = "x-transformer"#"gpt2" #mamba #gpt2
+wandb_run_name = model_name + optim # 'run' + str(time.time())
 n_layer = 2
 n_head = 4
 n_embd = 256
@@ -81,6 +82,7 @@ config_keys = [k for k,v in globals().items() if not k.startswith('_') and isins
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
+out_dir = 'out' + model_name + optim # output directory
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -107,6 +109,8 @@ print(f"tokens per iteration will be: {tokens_per_iter:,}")
 
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, 'log.txt'), 'w') as f:
+        f.write(f"config: {config}\n")
 torch.manual_seed(1337 + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
@@ -139,18 +143,35 @@ best_val_loss = 1e9
 # model init
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
                   bias=bias, vocab_size=None, dropout=dropout) # start with model_args from command line
+model_args['vocab_size'] =  50304
+
 if model_name == 'gpt2':
-    # init a new model from scratch
-    print("Initializing a new model from scratch")
-    # determine the vocab size we'll use for from-scratch training
-    print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
-    model_args['vocab_size'] =  50304
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
+
+if model_name == 'x-transformer':
+    # init a new model from scratch
+    from x_transformers import TransformerWrapper, Decoder
+    gptconf = GPTConfig(**model_args)
+    model = model = TransformerWrapper(
+    num_tokens = gptconf.vocab_size,
+    max_seq_len = gptconf.block_size,
+    attn_layers = Decoder(
+        dim = gptconf.n_embd,
+        depth = gptconf.n_layer,
+        heads = gptconf.n_head,
+        attn_flash = True,
+        use_rmsnorm = True,
+        ff_swish = True,
+        ff_glu = True ,
+        ff_no_bias = True,
+        rotary_pos_emb = True,
+    )
+)
+
 if model_name == 'mamba':
     from mambapy.lm import LM, MambaConfig
     config = MambaConfig(d_model=n_embd, n_layers=n_layer) # core model
-    model_args['vocab_size'] =  50304
     model = LM(config, vocab_size=model_args['vocab_size']) # encapsulate it in a LM  
 
 model = model.to(device)
@@ -160,7 +181,10 @@ if optim == "salsa":
     from salsa.SaLSA import SaLSA 
     optimizer = SaLSA( [param for name,param in model.named_parameters() if not "pooler" in name] ,momentum=(0.9,0.999,0.99), use_mv=True , weight_decay=weight_decay)
 if optim == "adam":
-    optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+    if model_name == 'x-transformer':
+        optimizer = torch.optim.AdamW( model.parameters(), lr=learning_rate, betas=(beta1, beta2), weight_decay=weight_decay)
+    else:
+        optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
 
 
 # compile the model
@@ -292,6 +316,10 @@ while True:
         # get loss as float. note: this is a CPU-GPU sync point
         # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
         lossf = loss.item() #* gradient_accumulation_steps
+
+        with open(os.path.join(out_dir, 'log.txt'), 'a') as f:
+            f.write(f"iter {iter_num}: train loss {lossf:.4f}, time {dt:.2f}, lr {lr} \n")
+
         if optim == "adam":
             lr = get_lr(iter_num+1) if decay_lr else learning_rate
         if optim == "salsa":
