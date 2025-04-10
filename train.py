@@ -317,13 +317,15 @@ while True:
         # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
         lossf = loss.item() #* gradient_accumulation_steps
 
-        with open(os.path.join(out_dir, 'log.txt'), 'a') as f:
-            f.write(f"iter {iter_num}: train loss {lossf:.4f}, time {dt:.2f}, lr {lr} \n")
+
 
         if optim == "adam":
             lr = get_lr(iter_num+1) if decay_lr else learning_rate
         if optim == "salsa":
             lr =  optimizer.state['lr']
+
+        with open(os.path.join(out_dir, 'log.txt'), 'a') as f:
+            f.write(f"iter {iter_num}: train loss {lossf:.4f}, time {dt:.2f}, lr {lr} \n")
         log_dict = {
                 "iter": iter_num,
                 "train/loss": lossf,
